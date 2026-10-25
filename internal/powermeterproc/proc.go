@@ -98,6 +98,11 @@ func New(o Options) *Supervisor {
 	if o.ConfigDir == "" {
 		o.ConfigDir = filepath.Join(appdir.Config(), "powermeter")
 	}
+	if o.ServerJS == "" {
+		// a power-meter build of the user's own (MAGPIE_POWERMETER_SERVER_JS)
+		// overrides the installed bundle, never the other way round
+		o.ServerJS = os.Getenv("MAGPIE_POWERMETER_SERVER_JS")
+	}
 	if o.Host == "" {
 		o.Host = "127.0.0.1"
 	}
