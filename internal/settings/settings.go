@@ -68,6 +68,10 @@ type Settings struct {
 	// Cmd-Tab reaches the window without an icon kept there the rest of
 	// the time. Dock wins over it.
 	DockWindow bool `json:"dockWindow,omitempty"`
+	// PowerMeter runs power-meter as a sidecar and shows its Balance page:
+	// the multi-provider balance and expiry board. Off by default — running a
+	// second process is something the user opts into. This computer's own.
+	PowerMeter bool `json:"powerMeter,omitempty"`
 	// Proxy for magpie's own requests to vendors: "" follows the
 	// environment and then the system, "direct" uses none, anything else
 	// is the proxy (http://, https:// or socks5://; host:port means http).
@@ -1093,6 +1097,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
 	s.RedactModel = cur.RedactModel
+	s.PowerMeter = cur.PowerMeter
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
 }
@@ -1412,6 +1417,16 @@ func SetRedactModel(on bool) error {
 	defer fileMu.Unlock()
 	s := load()
 	s.RedactModel = on
+	return save(s, false)
+}
+
+// SetPowerMeter turns the power-meter sidecar and its Balance page on or off,
+// on its own, as edit returns it from what the file holds now.
+func SetPowerMeter(on bool) error {
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	s := load()
+	s.PowerMeter = on
 	return save(s, false)
 }
 
