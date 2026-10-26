@@ -38,6 +38,14 @@ magpie.plugin("powermeter", (ctx) => {
     <div class="row-head"><button class="fold" type="button" data-fold="timeline" aria-expanded="true" aria-controls="pmTimeline"><span class="label" data-t>Expiry timeline</span></button>
       <span class="row-sub" data-t>Every credit lot, by expiry</span></div>
     <section class="pm-timeline" id="pmTimeline"></section>
+
+    <div class="row-head"><button class="fold" type="button" data-fold="accounts" aria-expanded="false" aria-controls="pmAccounts"><span class="label" data-t>Accounts</span></button>
+      <span class="row-sub" data-t>Add, sign in, or remove a provider's accounts</span></div>
+    <section class="pm-accounts" id="pmAccounts" hidden></section>
+
+    <div class="row-head"><button class="fold" type="button" data-fold="diag" aria-expanded="false" aria-controls="pmDiag"><span class="label" data-t>Diagnostics</span></button>
+      <span class="row-sub" data-t>The sidecar, the config file, and what failed</span></div>
+    <section class="pm-diag" id="pmDiag" hidden></section>
   </div>
 `,
     open() { return pmPageOpen(); },

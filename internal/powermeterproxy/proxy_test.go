@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,7 @@ type fakeSupervisor struct {
 	running bool
 	url     string
 	token   string
+	lastErr string
 	health  error // nil = healthy
 }
 
@@ -25,6 +27,7 @@ func (f fakeSupervisor) Running() bool                { return f.running }
 func (f fakeSupervisor) URL() string                  { return f.url }
 func (f fakeSupervisor) Token() string                { return f.token }
 func (f fakeSupervisor) Health(context.Context) error { return f.health }
+func (f fakeSupervisor) LastError() string            { return f.lastErr }
 
 func readState(t *testing.T, h *Handler, path string) (int, map[string]any) {
 	t.Helper()
@@ -65,6 +68,28 @@ func TestStartingSidecar(t *testing.T) {
 	code, body = readState(t, h, Prefix+"summary")
 	if code != http.StatusServiceUnavailable || body["state"] != "starting" {
 		t.Fatalf("proxied path while starting = %d %v, want 503 starting", code, body)
+	}
+}
+
+// A sidecar that keeps failing to start is "down" with the reason, not
+// "starting" for ever: the page's Diagnostics can say what's wrong.
+func TestFailedStartReportsReason(t *testing.T) {
+	h := New(fakeSupervisor{enabled: true, lastErr: "starting powermeter: exec: no such file"})
+
+	_, body := readState(t, h, statusPath)
+	if body["state"] != "down" {
+		t.Fatalf("status = %v, want down", body)
+	}
+	if d, _ := body["detail"].(string); !strings.Contains(d, "no such file") {
+		t.Fatalf("status detail = %q, want the supervisor's error", body["detail"])
+	}
+
+	code, body := readState(t, h, Prefix+"summary")
+	if code != http.StatusServiceUnavailable || body["state"] != "down" {
+		t.Fatalf("proxied path after a failed start = %d %v, want 503 down", code, body)
+	}
+	if d, _ := body["detail"].(string); !strings.Contains(d, "no such file") {
+		t.Fatalf("proxied error = %q, want the supervisor's error", body["error"])
 	}
 }
 
@@ -111,5 +136,45 @@ func TestProxiesWithTokenAndStripsPrefix(t *testing.T) {
 	}
 	if !strings.Contains(rw.Body.String(), `"ok":true`) {
 		t.Fatalf("backend body not passed through: %q", rw.Body.String())
+	}
+}
+
+// A privileged call (account add/remove, reveal) must reach the sidecar the
+// way its guard reads it: the intent marker there, and no Origin, since the
+// window's webview says wails://wails and the sidecar refuses any Origin that
+// isn't loopback.
+func TestPrivilegedCallCarriesIntentAndNoOrigin(t *testing.T) {
+	var intent, origin string
+	var body string
+	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		intent = r.Header.Get("X-Power-Meter-Intent")
+		origin = r.Header.Get("Origin")
+		b := new(strings.Builder)
+		_, _ = io.Copy(b, r.Body)
+		body = b.String()
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+
+	h := New(fakeSupervisor{enabled: true, url: backend.URL, token: "tok-123"})
+	req := httptest.NewRequest(http.MethodPost, "http://magpie.local"+Prefix+"accounts/add",
+		strings.NewReader(`{"provider":"codebuddy"}`))
+	req.Header.Set("Origin", "wails://wails")
+	req.Header.Set("Content-Type", "application/json")
+	rw := httptest.NewRecorder()
+	h.serve(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("proxied status = %d, want 200 (%q)", rw.Code, rw.Body.String())
+	}
+	if intent == "" {
+		t.Fatal("the backend saw no X-Power-Meter-Intent: the sidecar would answer 400")
+	}
+	if origin != "" {
+		t.Fatalf("the backend saw Origin %q, want none: the sidecar refuses a webview's", origin)
+	}
+	if body != `{"provider":"codebuddy"}` {
+		t.Fatalf("the backend saw body %q, want the request's own", body)
 	}
 }

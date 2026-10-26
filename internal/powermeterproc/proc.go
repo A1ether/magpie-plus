@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -83,6 +84,7 @@ type Supervisor struct {
 	mu      sync.Mutex
 	token   string // random per run, handed to the child and the proxy
 	url     string // set once the child prints its ready line
+	lastErr string // why the sidecar last failed to come up, "" once it does
 	cmd     *exec.Cmd
 	tree    *proc.Tree
 	running bool
@@ -146,6 +148,15 @@ func (s *Supervisor) Running() bool {
 	return s.running
 }
 
+// LastError is why the sidecar last failed to start or died, "" before the
+// first try and once it is up. The proxy reads it so a sidecar that can't
+// start at all reads "down, and here's why", not "starting" for ever.
+func (s *Supervisor) LastError() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastErr
+}
+
 // Enabled reports whether the sidecar is configured on.
 func (s *Supervisor) Enabled() bool { return s.opts.Enabled }
 
@@ -202,7 +213,15 @@ func (s *Supervisor) loop() {
 		s.mu.Lock()
 		s.running = false
 		s.url = ""
+		if err != nil {
+			s.lastErr = err.Error()
+		}
 		s.mu.Unlock()
+		if err != nil {
+			// the page shows this in Diagnostics; the log is where a developer
+			// reads it when the page can't say enough
+			log.Printf("powermeter: %v", err)
+		}
 
 		select {
 		case <-s.stopReq:
@@ -228,7 +247,10 @@ func (s *Supervisor) loop() {
 // stopped for a reason other than an early crash.
 func (s *Supervisor) runOnce() error {
 	ctx := context.Background()
-	cmd := s.buildCommand(ctx)
+	cmd, err := s.buildCommand(ctx)
+	if err != nil {
+		return err
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -262,6 +284,7 @@ func (s *Supervisor) runOnce() error {
 		s.mu.Lock()
 		s.url = url
 		s.running = true
+		s.lastErr = ""
 		s.mu.Unlock()
 	case err := <-stoppedTree:
 		return fmt.Errorf("powermeter exited before its listening line: %w", err)
@@ -303,15 +326,18 @@ func scanReady(r io.Reader, ready chan<- string) {
 
 // buildCommand builds the child command: the installed fake in tests, else
 // Bun running power-meter's server.js with the sidecar flags.
-func (s *Supervisor) buildCommand(ctx context.Context) *exec.Cmd {
+func (s *Supervisor) buildCommand(ctx context.Context) (*exec.Cmd, error) {
 	if s.opts.Command != nil {
-		return s.opts.Command(ctx, s.opts, s.token)
+		return s.opts.Command(ctx, s.opts, s.token), nil
+	}
+	if err := s.ensureConfigDir(); err != nil {
+		return nil, err
 	}
 	bun, err := plugin.Bun(ctx)
 	if err != nil {
-		// No Bun to run power-meter: report a command that fails fast, so the
-		// supervisor records the failure and backs off instead of panicking.
-		return proc.CommandContext(ctx, "false")
+		// No Bun means power-meter can't run at all; saying so beats spawning a
+		// command that only exits nonzero, which reads as a crash.
+		return nil, fmt.Errorf("powermeter needs Bun: %w", err)
 	}
 	args := []string{
 		s.serverJS(),
@@ -323,7 +349,18 @@ func (s *Supervisor) buildCommand(ctx context.Context) *exec.Cmd {
 	}
 	cmd := proc.CommandContext(ctx, bun, args...)
 	cmd.Dir = s.opts.ConfigDir
-	return cmd
+	return cmd, nil
+}
+
+// ensureConfigDir makes ConfigDir, which the child runs in and where it keeps
+// accounts.json and .env. The child's own cwd is that directory, so a spawn
+// into a missing one fails with chdir — on a clean machine that would leave
+// the page saying "starting" for ever.
+func (s *Supervisor) ensureConfigDir() error {
+	if err := os.MkdirAll(s.opts.ConfigDir, 0o700); err != nil {
+		return fmt.Errorf("powermeter config dir: %w", err)
+	}
+	return nil
 }
 
 // serverJS resolves power-meter's compiled entrypoint: the override when set,

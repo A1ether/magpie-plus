@@ -12,6 +12,6 @@ func init() {
 		ID: "powermeter", API: "^1", Requires: []string{"window"}, Essential: true,
 		Name: "Balance board", Sub: "Every provider's balance and each credit lot's expiry, from the power-meter sidecar",
 		Parts:  []pluginrt.Part{{Slot: "nav.page", Key: "powermeter"}},
-		Client: []string{"i18n.js", "balance.css", "client.js", "page.js"},
+		Client: []string{"i18n.js", "balance.css", "client.js", "accounts.js", "page.js"},
 	})
 }

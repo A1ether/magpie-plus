@@ -27,6 +27,10 @@ type Supervisor interface {
 	URL() string
 	Token() string
 	Health(ctx context.Context) error
+	// LastError is why the sidecar last failed to come up, "" when it is up or
+	// hasn't tried yet. Without it a sidecar that can never start would read
+	// "starting" for ever.
+	LastError() string
 }
 
 // Prefix is the mux subtree the proxy answers. Every request under it is
@@ -90,10 +94,16 @@ func (h *Handler) serve(rw http.ResponseWriter, r *http.Request) {
 	}
 	base := sup.URL()
 	if base == "" {
-		writeJSON(rw, http.StatusServiceUnavailable, map[string]any{
+		body := map[string]any{
 			"error": "power-meter sidecar is starting",
 			"state": "starting",
-		})
+		}
+		if e := sup.LastError(); e != "" {
+			body["error"] = "power-meter sidecar couldn't start: " + e
+			body["state"] = "down"
+			body["detail"] = e
+		}
+		writeJSON(rw, http.StatusServiceUnavailable, body)
 		return
 	}
 	target, err := url.Parse(base)
@@ -135,6 +145,13 @@ func (h *Handler) serve(rw http.ResponseWriter, r *http.Request) {
 			// earns the intent marker.
 			pr.Out.Header.Set("X-Power-Meter-Token", sup.Token())
 			pr.Out.Header.Set("X-Power-Meter-Intent", "magpie-gui")
+			// The sidecar's privileged routes (account add/remove, reveal) refuse
+			// an Origin that isn't loopback. The window's webview sends its own
+			// scheme (wails://wails, and http://wails.localhost on Windows), which
+			// the sidecar has no reason to know, so an honest request would be
+			// turned away. Only this page reaches the proxy with the token and
+			// intent above injected, so the sidecar judges it by its loopback Host.
+			pr.Out.Header.Del("Origin")
 		},
 		// A sidecar that died between URL() and the dial is a bad gateway the
 		// page can read, not a hung request.
@@ -158,7 +175,14 @@ func (h *Handler) serveStatus(rw http.ResponseWriter, r *http.Request) {
 	case sup == nil || !sup.Enabled():
 		// state stays "disabled"
 	case sup.URL() == "":
-		state["state"] = "starting"
+		// A failed start is "down" with the reason, not "starting" for ever: the
+		// supervisor keeps retrying, but the page should say why nothing works.
+		if e := sup.LastError(); e != "" {
+			state["state"] = "down"
+			state["detail"] = "the sidecar couldn't start: " + e
+		} else {
+			state["state"] = "starting"
+		}
 	default:
 		if err := sup.Health(r.Context()); err != nil {
 			state["state"] = "down"

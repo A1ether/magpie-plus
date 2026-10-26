@@ -5,6 +5,9 @@
 // (internal/powermeterproxy). The page never invents a state: the status
 // chip is the proxy's own word — disabled, starting, up, down.
 
+let pmStatusTimer = 0; // a pending status retry while the sidecar starts
+let pmStatusWait = 0; // that retry's delay, growing to pmStatusPoll's cap
+
 // pmNum formats an amount for a card or a lot, grouped, no trailing zeros.
 function pmNum(n) {
   if (n === null || n === undefined || isNaN(n)) return "–";
@@ -106,6 +109,7 @@ function pmLot(hit, th) {
 
 // pmRender draws the whole payload: totals, cards, the timeline.
 function pmRender(data) {
+  pmLastSummary = data;
   const th = data.expiryThresholds || { criticalDays: 5, warningDays: 14 };
 
   // totals
@@ -143,8 +147,10 @@ function pmRender(data) {
   }
 }
 
-// pmChipState paints the status chip and toggles the off/body panels.
-function pmChipState(state, detail) {
+// pmChipState paints the status chip and toggles the off/body panels. The
+// last word is kept for the diagnostics section, which says it in full.
+function pmChipState(state, detail, url) {
+  pmLastStatus = { state, detail: detail || "", url: url || pmLastStatus?.url || "" };
   const chip = document.getElementById("pmStatus");
   const text = document.getElementById("pmStatusText");
   chip.dataset.state = state;
@@ -153,25 +159,41 @@ function pmChipState(state, detail) {
   const on = state === "up";
   off.hidden = state !== "disabled";
   body.hidden = !on;
-  text.textContent =
-    state === "up" ? t("Refreshed") :
-    state === "disabled" ? t("The power-meter sidecar is off") :
-    state === "down" ? t("The sidecar is unreachable") :
-    t("The sidecar is starting…");
+  const key =
+    state === "up" ? "Refreshed" :
+    state === "disabled" ? "The power-meter sidecar is off" :
+    state === "down" ? "The sidecar is unreachable" :
+    "The sidecar is starting…";
+  text.textContent = t(key);
+  // The chip is a [data-t] node, and translateStatic remembers a node's
+  // English to re-render it when the language changes. Left alone, it would put
+  // back whichever state the chip said when the language last changed — a
+  // "starting" chip over a sidecar that is up — so the key is kept here.
+  text.dataset.en = key;
   if (detail) chip.title = detail;
 }
 
-// pmPageLoad reads the sidecar's status, then its summary when up.
+// pmPageLoad reads the sidecar's status, then its summary, its accounts and
+// its diagnostics when up.
 async function pmPageLoad(force) {
   let st;
   try {
     st = await api("powermeter/status");
   } catch (e) {
     pmChipState("down", e.message);
+    pmDiagRender();
     return;
   }
-  pmChipState(st.state, st.detail);
-  if (st.state !== "up") return;
+  pmChipState(st.state, st.detail, st.url);
+  if (st.state !== "up") {
+    pmDiagRender();
+    // The sidecar takes a few seconds to come up (and restarts after a crash),
+    // so the page asks again rather than sit on "starting…" until Refresh now.
+    if (st.state === "starting") pmStatusPoll();
+    else pmStatusStop();
+    return;
+  }
+  pmStatusStop();
   try {
     const data = await api("powermeter/summary" + (force ? "?force=1" : ""));
     pmRender(data);
@@ -179,6 +201,40 @@ async function pmPageLoad(force) {
   } catch (e) {
     pmChipState("down", e.message);
     status(t(e.message), "err");
+  }
+  await pmAcctLoad();
+}
+
+// pmStatusStop drops a pending status retry, for a sidecar that answered or
+// for a page that leaves.
+function pmStatusStop() {
+  clearTimeout(pmStatusTimer);
+  pmStatusTimer = 0;
+  pmStatusWait = 0;
+}
+
+// pmStatusPoll asks about the sidecar again a little later, backing off to a
+// quiet 15s so a sidecar that stays down costs no more than that.
+function pmStatusPoll() {
+  clearTimeout(pmStatusTimer);
+  pmStatusWait = Math.min(pmStatusWait ? pmStatusWait * 2 : 1500, 15000);
+  pmStatusTimer = setTimeout(() => pmPageLoad(false), pmStatusWait);
+}
+
+// pmFoldBind gives every row head's fold its chevron and its toggle. The
+// page draws its own folds (the window's data-fold has no handler of its
+// own); the box is the one the button names in aria-controls.
+function pmFoldBind() {
+  for (const b of document.querySelectorAll("#view-powermeter .row-head .fold[aria-controls]")) {
+    if (b.dataset.bound) continue;
+    b.dataset.bound = "1";
+    if (!b.querySelector("svg")) b.prepend(svg(CHEV_R, 11, 1.6));
+    b.addEventListener("click", () => {
+      const box = document.getElementById(b.getAttribute("aria-controls"));
+      const open = b.getAttribute("aria-expanded") !== "false";
+      b.setAttribute("aria-expanded", String(!open));
+      if (box) box.hidden = open;
+    });
   }
 }
 
@@ -199,5 +255,6 @@ function pmPageOpen() {
       document.querySelector('[data-view="settings"]')?.click();
     });
   }
+  pmFoldBind();
   return pmPageLoad(false);
 }

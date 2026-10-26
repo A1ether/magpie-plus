@@ -50,6 +50,14 @@ func TestTrayMenuLabels(t *testing.T) {
 	if de != (trayLabels{"magpie öffnen", "Version 0.1.500", "Zum Aktualisieren auf 0.1.501 neu starten", "magpie beenden"}) {
 		t.Errorf("de: %+v", de)
 	}
+	// the Balance item is the page's own word in each language
+	for lang, want := range map[string]string{
+		"en": "Balance board", "zh": "余额看板", "zh-TW": "餘額看板", "ja": "残高ボード", "de": "Salden",
+	} {
+		if got := trayText(lang, "Balance board"); got != want {
+			t.Errorf("trayText(%q, Balance board) = %q, want %q", lang, got, want)
+		}
+	}
 	for lang, want := range map[string]string{"de": "en", "en": "en", "zh": "zh", "zh-TW": "zh"} {
 		if got := notesLang(lang); got != want {
 			t.Errorf("notesLang(%q) = %q, want %q", lang, got, want)

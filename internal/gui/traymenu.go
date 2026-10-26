@@ -11,6 +11,7 @@ import (
 // (i18n.js), and these few are all the menu shows (#301).
 var trayZh = map[string]string{
 	"Open magpie":                          "打开 magpie",
+	"Balance board":                        "余额看板",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重启以更新",
 	"Restart to Update to %s":              "重启以更新到 %s",
@@ -22,6 +23,7 @@ var trayZh = map[string]string{
 // trayZhTW is the tray menu in Traditional Chinese, with Taiwan's words.
 var trayZhTW = map[string]string{
 	"Open magpie":                          "開啟 magpie",
+	"Balance board":                        "餘額看板",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重新啟動以更新",
 	"Restart to Update to %s":              "重新啟動以更新到 %s",
@@ -33,6 +35,7 @@ var trayZhTW = map[string]string{
 // trayJa is the tray menu in Japanese.
 var trayJa = map[string]string{
 	"Open magpie":                          "magpie を開く",
+	"Balance board":                        "残高ボード",
 	"Version %s":                           "バージョン %s",
 	"Restart to Update":                    "再起動してアップデート",
 	"Restart to Update to %s":              "再起動して %s にアップデート",
@@ -44,6 +47,7 @@ var trayJa = map[string]string{
 // trayDe is the tray menu in German.
 var trayDe = map[string]string{
 	"Open magpie":                          "magpie öffnen",
+	"Balance board":                        "Salden",
 	"Version %s":                           "Version %s",
 	"Restart to Update":                    "Zum Aktualisieren neu starten",
 	"Restart to Update to %s":              "Zum Aktualisieren auf %s neu starten",

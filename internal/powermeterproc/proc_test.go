@@ -133,6 +133,69 @@ func TestCrashBackoff(t *testing.T) {
 	}
 }
 
+// TestConfigDirIsCreated: the child runs in ConfigDir, so a clean machine's
+// first start must find it there rather than fail its chdir. Nested, too: the
+// parent <magpie config> may not exist either.
+func TestConfigDirIsCreated(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "magpie", "powermeter")
+	s := New(Options{ConfigDir: dir})
+	if err := s.ensureConfigDir(); err != nil {
+		t.Fatalf("ensureConfigDir: %v", err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("the config dir wasn't created: %v", err)
+	}
+	if !st.IsDir() {
+		t.Fatalf("%s isn't a directory", dir)
+	}
+	// A second call on an existing dir is a no-op, not an error.
+	if err := s.ensureConfigDir(); err != nil {
+		t.Fatalf("ensureConfigDir on an existing dir: %v", err)
+	}
+}
+
+// TestLastErrorSaysWhy: a sidecar that can't start records why, so the page's
+// Diagnostics can say it instead of "starting" for ever; a child that does
+// come up clears it.
+func TestLastErrorSaysWhy(t *testing.T) {
+	s := New(Options{
+		Enabled:        true,
+		RestartBackoff: 20 * time.Millisecond,
+		Command: func(ctx context.Context, _ Options, _ string) *exec.Cmd {
+			return exec.CommandContext(ctx, filepath.Join(t.TempDir(), "not-a-binary"))
+		},
+	})
+	s.Start()
+	defer s.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for s.LastError() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.LastError() == "" {
+		t.Fatal("a child that never started left LastError empty")
+	}
+	if s.URL() != "" || s.Running() {
+		t.Fatalf("a failed start reported up: url %q running %v", s.URL(), s.Running())
+	}
+
+	// The other half: a child that prints its ready line clears the reason.
+	up := New(Options{Enabled: true, Command: fakeReady("http://127.0.0.1:59997")})
+	up.Start()
+	defer up.Stop()
+	deadline = time.Now().Add(5 * time.Second)
+	for up.URL() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if up.URL() == "" {
+		t.Fatal("the healthy child never came up")
+	}
+	if e := up.LastError(); e != "" {
+		t.Fatalf("LastError = %q with the child up, want empty", e)
+	}
+}
+
 // TestTokenIsRandomPerRun: two supervisors mint different tokens, so a stale
 // one from a prior run can't drive this run's sidecar.
 func TestTokenIsRandomPerRun(t *testing.T) {

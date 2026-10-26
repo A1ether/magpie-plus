@@ -444,6 +444,9 @@ func Run(version string, showMain bool, link string) error {
 	labels := trayMenuLabels(trayLang(settings.Load().Lang, systemLang), version, "")
 	menu := h.app.NewMenu()
 	open := menu.Add(labels.open).OnClick(func(*application.Context) { h.ShowMain("") })
+	// straight to the Balance page: the same words as its nav entry, so the
+	// menu and the page call it one thing
+	balance := menu.Add(trayText(trayLang(settings.Load().Lang, systemLang), "Balance board")).OnClick(func(*application.Context) { h.ShowMain("powermeter") })
 	menu.AddSeparator()
 	ver := menu.Add(labels.version).SetEnabled(false)
 	restart := menu.Add(labels.restart).SetHidden(true)
@@ -473,6 +476,7 @@ func Run(version string, showMain bool, link string) error {
 			l.restart = trayRestartNow(trayLang(settings.Load().Lang, systemLang), b)
 		}
 		open.SetLabel(l.open)
+		balance.SetLabel(trayText(trayLang(settings.Load().Lang, systemLang), "Balance board"))
 		ver.SetLabel(l.version)
 		restart.SetLabel(l.restart)
 		quit.SetLabel(l.quit)

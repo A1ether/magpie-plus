@@ -59,3 +59,57 @@
 .pm-lot-amt { font-size: 13px; font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; flex: none; }
 
 .pm-empty { color: var(--faint); font-size: 13px; padding: 18px 4px; }
+
+/* account management (accounts.js): one block per provider, its accounts,
+   the add form and the sign-in panel folded under it */
+.pm-accounts { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 22px; }
+.pm-prov { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--card); }
+.pm-prov + .pm-prov { margin-top: 6px; }
+.pm-prov-top { display: flex; align-items: center; gap: 8px; }
+.pm-prov-name { font-size: 13.5px; font-weight: 600; color: var(--fg); }
+.pm-prov-count { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pm-prov-hint { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.pm-prov-none { font-size: 12px; color: var(--faint); margin-top: 6px; }
+
+.pm-acct { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); margin-top: 6px; }
+.pm-acct-name { font-size: 12.5px; color: var(--fg); }
+.pm-acct-flag { font-size: 10.5px; color: var(--amber); background: var(--amber-soft); border-radius: 5px; padding: 1px 5px; }
+.pm-acct-mask { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+.pm-danger { color: var(--red); }
+.pm-danger:hover { color: var(--red); background: var(--red-soft); }
+.pm-go { color: var(--accent); }
+.pm-go:hover { color: var(--accent); background: var(--accent-soft); }
+
+/* the add form */
+.pm-add { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.pm-field { display: flex; flex-direction: column; gap: 4px; }
+.pm-field-k { font-size: 11.5px; font-weight: 600; color: var(--fg-2); }
+.pm-field input, .pm-field select, .pm-field textarea {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; color: var(--fg);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; outline: none;
+}
+.pm-field input:focus, .pm-field select:focus, .pm-field textarea:focus { border-color: var(--accent); }
+.pm-field textarea { resize: vertical; min-height: 64px; }
+.pm-field-hint { font-size: 11px; color: var(--muted); }
+.pm-force { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.pm-add-actions { display: flex; align-items: center; gap: 4px; }
+.pm-msg { font-size: 12px; color: var(--muted); margin: 0; }
+.pm-msg.ok { color: var(--green); }
+.pm-msg.bad { color: var(--red); }
+.pm-msg.warn { color: var(--amber); }
+
+/* the sign-in panel */
+.pm-login { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 10px; }
+.pm-login-box { display: flex; flex-direction: column; gap: 7px; align-items: flex-start; }
+.pm-login-hint { font-size: 12px; color: var(--fg-2); }
+.pm-login-msg { font-size: 12px; color: var(--muted); }
+.pm-login-url { font-size: 11px; color: var(--muted); word-break: break-all; max-height: 40px; overflow: hidden; }
+
+/* diagnostics: what the sidecar is, where its config is, and what failed */
+.pm-diag { display: flex; flex-direction: column; gap: 1px; margin: 10px 0 22px; }
+.pm-diag-row { display: flex; gap: 12px; padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.pm-diag-k { flex: none; width: 150px; color: var(--muted); }
+.pm-diag-v { flex: 1; min-width: 0; color: var(--fg-2); word-break: break-word; }
+.pm-diag-row.ok .pm-diag-v { color: var(--green); }
+.pm-diag-row.bad .pm-diag-v { color: var(--red); }
+.pm-diag-row.warn .pm-diag-v { color: var(--amber); }
