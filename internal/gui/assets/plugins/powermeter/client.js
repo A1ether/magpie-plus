@@ -19,13 +19,14 @@ magpie.plugin("powermeter", (ctx) => {
       <span id="pmStatusText" data-t>The sidecar is starting…</span>
     </span>
     <span class="grow"></span>
+    <button class="text" id="pmTurnOff" type="button" data-t hidden>Turn the sidecar off</button>
     <button class="icon" id="pmReload" type="button" aria-label="Refresh now" data-tt><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"/></svg></button>
   </div>
 
   <section class="pm-off" id="pmOff" hidden>
     <p class="pm-off-title" data-t>The power-meter sidecar is off</p>
-    <p class="pm-off-sub" data-t>Turn it on in Settings to see balances and expiry here.</p>
-    <button class="text" id="pmOpenSettings" type="button" data-t>Open Settings</button>
+    <p class="pm-off-sub" data-t>power-meter reads every provider's balance and each credit lot's expiry; magpie runs it beside itself, on this computer only.</p>
+    <button class="text" id="pmTurnOn" type="button" data-t>Turn the sidecar on</button>
   </section>
 
   <div class="pm-body" id="pmBody" hidden>
@@ -43,7 +44,7 @@ magpie.plugin("powermeter", (ctx) => {
       <span class="row-sub" data-t>Add, sign in, or remove a provider's accounts</span></div>
     <section class="pm-accounts" id="pmAccounts" hidden></section>
 
-    <div class="row-head"><button class="fold" type="button" data-fold="diag" aria-expanded="false" aria-controls="pmDiag"><span class="label" data-t>Diagnostics</span></button>
+    <div class="row-head"><button class="fold" type="button" data-fold="diag" aria-expanded="false" aria-controls="pmDiag"><span class="label" data-t>Balance diagnostics</span></button>
       <span class="row-sub" data-t>The sidecar, the config file, and what failed</span></div>
     <section class="pm-diag" id="pmDiag" hidden></section>
   </div>

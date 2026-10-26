@@ -78,7 +78,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.setViewportSize({ width: engine === "webkit" ? Math.round(w / zoom) : w, height: 600 });
           await settled(page);
           const n = await steps(page), at = `${w}pt: ${await page.evaluate(() => document.querySelector(".top").className)}`;
-          if (w >= 1200) assert.equal(n, 0, "the header is drawn in with room to spare at " + at);
+          // A window this wide is as at 100%, or as near it as the pages it
+          // holds allow. The header carries ten of them, and the tenth (the
+          // Balance board, beside Masking) is English's widest at 125%: that
+          // window wants 1280 points to hold the whole header, past the 1024
+          // CSS pixels where the sidebar takes the tabs, so 1200 to 1270
+          // shortens Update to its arrow — the first step, and no further. At
+          // 110% all ten fit from 1200 up, and it is as at 100%.
+          const spared = zoom >= 1.25 ? 1 : 0;
+          if (w >= 1200) assert.ok(n <= spared, "the header is drawn in with room to spare at " + at);
           assert(n >= last, "a wider window is drawn in more than a narrower one at " + at);
           last = n;
         }

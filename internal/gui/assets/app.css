@@ -303,9 +303,13 @@ body.panel .seg { display: none; }
 body.window .top.inrow .seg { position: relative; left: auto; top: auto; transform: none; margin: 0 auto; } /* relative still: its thumb sits in it, not over the whole header */
 body.window .top.inrow .actions { margin-left: 0; }
 .top.cramped .seg button { padding: 0 8px; }
-.top.crowded .seg button { padding: 0 6px; font-size: 12px; }
-.top.crowded .brand { display: none; }
+/* the tabs drawn in further: the magpie stays beside them, and gives way only
+   in the last step, where they scroll instead. The brand keeps its size here:
+   fitTop watches it, and a brand that changed size inside that callback would
+   resize itself again on every pass */
+.top.crowded .seg button { padding: 0 5px; font-size: 11.5px; }
 .top.packed .seg button { padding: 0 3px; font-size: 11.5px; }
+.top.packed .brand { display: none; }
 /* and when even that doesn't fit, the tabs scroll sideways rather than push the page wider */
 .top.packed .seg { min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .top.packed .seg::-webkit-scrollbar { display: none; }

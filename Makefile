@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -45,6 +45,26 @@ install:
 
 test:
 	go vet -tags "$(TAGS)" ./... && go test -tags "$(TAGS)" ./...
+
+# The Balance board's sidecar: power-meter's compiled server, installed where
+# internal/powermeterproc looks for it (<config>/magpie/powermeter/server.js),
+# its sibling modules beside it and public/ above it. The whole dist/ tree
+# goes, because server.js imports its siblings by relative path. It is not
+# bundled into magpie: power-meter is its own project, and a sidecar is one
+# 'make balance-board' away (or MAGPIE_POWERMETER_SERVER_JS pointing at your
+# own build). Needs the power-meter checkout, whose 'npm run build' writes
+# dist/. A portable magpie keeps its files beside the app instead: set
+# POWER_METER_DEST to that data folder.
+POWER_METER ?= $(HOME)/DevSpace/power-meter
+POWER_METER_DEST ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/magpie/powermeter
+
+balance-board:
+	@test -d $(POWER_METER) || { echo "power-meter not at $(POWER_METER): set POWER_METER=<checkout>" >&2; exit 1; }
+	@test -f $(POWER_METER)/dist/server.js || { echo "$(POWER_METER)/dist/server.js is missing: run 'npm run build' there first" >&2; exit 1; }
+	@mkdir -p $(POWER_METER_DEST)
+	@rsync -a --delete-excluded --exclude '*.map' --exclude 'power-meter-sidecar' $(POWER_METER)/dist/ $(POWER_METER_DEST)/
+	@rsync -a $(POWER_METER)/public/ $(POWER_METER_DEST)/public/
+	@echo "  balance board · sidecar installed in $(POWER_METER_DEST) · turn it on in the Balance board page"
 
 # The browser regressions under internal/gui/tests: the real pages in
 # Playwright's Chromium and WebKit; see internal/gui/tests/README.md.

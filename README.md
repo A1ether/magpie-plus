@@ -259,6 +259,25 @@ Find them under Plugins › Discover › Gateway middleware. See [Gateway middle
 | **Context** | How full each request's context window is, how much came from the cache, and what fills it |
 | **Bills** | By account and by upstream key, and OTLP export to your own observability stack |
 
+### Balance board (powered by power-meter)
+
+A second, deeper view of balances for accounts the gateway doesn't hold: each provider's remaining credit, and every credit lot with the day it expires, so the lot that runs out first is spent first. It is an addition to this fork, built on [power-meter](https://github.com/A1ether/power-meter) as a sidecar.
+
+| | |
+| :-- | :-- |
+| **Cards** | One card per provider, lowest balance first; a provider with several accounts lists each one under its card |
+| **Expiry timeline** | Every credit lot by expiry, in critical and warning bands, with its value in yuan |
+| **Accounts** | Add, sign in, reveal a credential to the clipboard, or remove an account, without leaving magpie |
+| **Diagnostics** | The sidecar's state, where its config lives, and which providers failed and why |
+
+It is **off until you turn it on**, from the Balance board page itself. Turning it on starts power-meter beside magpie (loopback only, a fresh token each run, its own config folder under magpie's). Install its sidecar with:
+
+```bash
+make balance-board POWER_METER=~/DevSpace/power-meter
+```
+
+That copies power-meter's `dist/` into `<config>/magpie/powermeter/`, where magpie looks for it. `MAGPIE_POWERMETER_SERVER_JS` points magpie at your own build instead.
+
 ### Sharing
 
 | | |

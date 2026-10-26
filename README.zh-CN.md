@@ -259,6 +259,25 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
 | **上下文** | 每个请求的上下文窗口用了多满、多少来自缓存、被什么占着 |
 | **账单** | 按账号、按上游 key 统计，还能 OTLP 导出到你自己的可观测性系统 |
 
+### 余额看板（由 power-meter 驱动）
+
+网关管不到的账号，在这里看得更深一层：每个平台还剩多少额度，以及每一批积分的到期日——最快到期的排最前，先花它。这是本 fork 新增的功能，以 [power-meter](https://github.com/A1ether/power-meter) 作为伴随进程实现。
+
+| | |
+| :-- | :-- |
+| **余额卡片** | 一个平台一张卡，余额少的排最前；多账号的平台在卡内逐条列出 |
+| **到期时间线** | 每个积分批次按到期排序，分「即将到期」与「警告」两级，并折算人民币 |
+| **账号** | 在 magpie 里添加、登录、把凭证复制到剪贴板、或移除账号，不用切出去 |
+| **诊断** | 伴随进程的状态、配置文件位置，以及哪些平台失败、为什么失败 |
+
+它**默认关闭**，在「余额看板」页里自己打开。打开后 power-meter 就伴随 magpie 运行（只绑回环、每次运行换一个 token、配置放在 magpie 自己的配置目录下）。安装它的伴随进程：
+
+```bash
+make balance-board POWER_METER=~/DevSpace/power-meter
+```
+
+它把 power-meter 的 `dist/` 拷到 `<配置目录>/magpie/powermeter/`，也就是 magpie 找它的地方。想用自己的构建，用 `MAGPIE_POWERMETER_SERVER_JS` 指过去。
+
 ### 共享
 
 | | |

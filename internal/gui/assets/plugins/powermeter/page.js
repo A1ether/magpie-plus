@@ -115,8 +115,13 @@ function pmRender(data) {
   // totals
   const totals = el("div", "pm-total-row");
   const tt = data.totals || {};
-  const cell = (label, value, cls) => el("div", "pm-total " + (cls || ""),
-    el("span", "pm-total-num", value), el("span", "pm-total-label", t(label)));
+  // el() takes one child: its label is appended, or the cell would read as a
+  // number with nothing saying what it counts
+  const cell = (label, value, cls) => {
+    const c = el("div", "pm-total " + (cls || ""), el("span", "pm-total-num", value));
+    c.append(el("span", "pm-total-label", t(label)));
+    return c;
+  };
   totals.append(cell("Providers", tt.providers ?? "–"));
   totals.append(cell("Healthy", tt.ok ?? "–", "ok"));
   totals.append(cell("Failed", tt.failed ?? "–", tt.failed ? "bad" : ""));
@@ -159,8 +164,11 @@ function pmChipState(state, detail, url) {
   const on = state === "up";
   off.hidden = state !== "disabled";
   body.hidden = !on;
+  // the switch out is beside the refresh, only while there is a sidecar to
+  // stop; a disabled page offers the switch on in its place
+  document.getElementById("pmTurnOff").hidden = state === "disabled";
   const key =
-    state === "up" ? "Refreshed" :
+    state === "up" ? "Refreshed just now" :
     state === "disabled" ? "The power-meter sidecar is off" :
     state === "down" ? "The sidecar is unreachable" :
     "The sidecar is starting…";
@@ -238,6 +246,23 @@ function pmFoldBind() {
   }
 }
 
+// pmPowerSet turns the sidecar on or off from this page: the switch is the
+// page's own, because a sidecar the user hasn't started is exactly what this
+// page shows them. A sidecar takes a few seconds to come up, so the status
+// poll then watches it arrive.
+async function pmPowerSet(on, button) {
+  button.disabled = true;
+  try {
+    await api("settings/power-meter", { on });
+  } catch (e) {
+    status(t(e.message), "err");
+    button.disabled = false;
+    return;
+  }
+  button.disabled = false;
+  await pmPageLoad(false);
+}
+
 function pmPageOpen() {
   const reload = document.getElementById("pmReload");
   if (!reload.dataset.bound) {
@@ -250,10 +275,10 @@ function pmPageOpen() {
       await pmPageLoad(true);
       reload.disabled = false;
     });
-    document.getElementById("pmOpenSettings").addEventListener("click", () => {
-      // open Settings where the sidecar's switch lives
-      document.querySelector('[data-view="settings"]')?.click();
-    });
+    const on = document.getElementById("pmTurnOn");
+    on.addEventListener("click", () => pmPowerSet(true, on));
+    const off = document.getElementById("pmTurnOff");
+    off.addEventListener("click", () => pmPowerSet(false, off));
   }
   pmFoldBind();
   return pmPageLoad(false);

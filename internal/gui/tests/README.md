@@ -1926,6 +1926,23 @@ amounts, the meter and "As of" (截至). One amount reads as it did. No
 left-border accent, nothing runs out of a card; English and Chinese, Chromium
 and WebKit, `/api/plugins` faked.
 
+`balance-board.test.cjs` checks the Balance page's own sidecar switch and the
+four states its status chip says, each the proxy's word rather than the page's
+own. Off, the panel says so and offers "Turn the sidecar on"; the page reads no
+board until it is pressed, and the press posts `{on: true}`, draws the board the
+proxy then answers, and turns it off again with `{on: false}`. Up, each provider
+gets a card (a failed one marked `pm-st-error`), the totals show a number and
+its label, the nearest lot says "within {n} days" with its value in yuan, and
+Diagnostics folds out the config path. Down, the chip says unreachable with the
+reason in its tooltip, and the page still offers to turn it off. Starting, the
+page asks again by itself until the sidecar arrives. Every language and both
+engines, with `/api/powermeter/` faked; `internal/gui/powermeter_test.go` covers
+the switch's Go side and `internal/powermeterproxy`'s tests the forwarding.
+
+```sh
+node --test internal/gui/tests/balance-board.test.cjs
+```
+
 `search-api.test.cjs` checks Settings' Web search section (#419: a search API
 of one's own for when no provider can search). It lists the search APIs in
 the order they are tried and has a row to add one: picking SearXNG asks for

@@ -101,7 +101,7 @@ function pmAcctProvider(p, cfg, shared) {
     top.append(b);
   }
   if (p.manageAccounts) {
-    const b = el("button", "text", t("Add account"));
+    const b = el("button", "text", t("Add a provider account"));
     b.type = "button";
     b.onclick = () => {
       pmLoginStop();
@@ -127,7 +127,7 @@ function pmAcctProvider(p, cfg, shared) {
 function pmAcctRow(p, a, cfg) {
   const row = el("div", "pm-acct");
   row.append(el("span", "pm-acct-name", a.label || a.id || "–"));
-  if (a.complete === false) row.append(el("span", "pm-acct-flag", t("incomplete")));
+  if (a.complete === false) row.append(el("span", "pm-acct-flag", t("credential incomplete")));
   const masks = Object.entries(a.previews || {})
     .map(([k, v]) => k + " " + v)
     .join(" · ");
@@ -144,7 +144,7 @@ function pmAcctRow(p, a, cfg) {
       b.disabled = true;
       try {
         const res = await api("powermeter/reveal", { provider: p.id, accountId: a.id, key });
-        await copy(res.value, t("Credential"), b);
+        await copy(res.value, t("power-meter credential"), b);
       } catch (e) {
         status(e.message, "err");
       }
@@ -226,7 +226,7 @@ function pmAcctForm(p, panelBox) {
   }
 
   const nameRow = el("label", "pm-field");
-  nameRow.append(el("span", "pm-field-k", t("Name (optional)")));
+  nameRow.append(el("span", "pm-field-k", t("Account name (optional)")));
   const name = el("input", "pm-name");
   name.type = "text";
   name.autocomplete = "off";
@@ -404,13 +404,13 @@ function pmDiagRender() {
   };
 
   row(
-    t("Sidecar"),
+    t("The sidecar process"),
     pmLastStatus
       ? [pmLastStatus.state, pmLastStatus.url, pmLastStatus.detail].filter(Boolean).join(" · ")
       : "–",
     pmLastStatus?.state === "up" ? "ok" : "bad",
   );
-  if (pmLastConfig?.accountsFilePath) row(t("Config file"), pmLastConfig.accountsFilePath);
+  if (pmLastConfig?.accountsFilePath) row(t("power-meter config file"), pmLastConfig.accountsFilePath);
 
   const warnings = new Set(pmLastConfig?.warnings || []);
   for (const w of pmLastSummary?.warnings || []) warnings.add(w);
@@ -430,7 +430,7 @@ function pmDiagRender() {
       "bad",
     );
   }
-  for (const w of warnings) row(t("Warning"), w, "warn");
+  for (const w of warnings) row(t("power-meter warning"), w, "warn");
   for (const v of missing) row(t("Missing environment variable"), v, "warn");
 
   if (!failed.length && !warnings.size && !missing.size) {
