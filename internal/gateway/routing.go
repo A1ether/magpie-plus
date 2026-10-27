@@ -1127,6 +1127,11 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if why == failQuota && clineModelLimited(c, body) {
 		id = c.restID()
 	}
+	// a ZCode Start Plan trial entry ended or spent is that entry's: the
+	// account's GLM Coding Plan models still answer (#3661)
+	if why == failQuota && zcodeTrialRefused(c, status, body) {
+		id = c.restID()
+	}
 	// out of credit, or of a quota, on a model that costs credits where
 	// the subscription serves other models free is that model's: the free
 	// ones draw on no credits, and the account still serves them (Creat.wu
@@ -1177,9 +1182,14 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 // the refusal is read whoever answered). Its key refused, or the computer
 // unreachable, still rests it whole, and so does the key's own limit there
 // (keyLimited's 429, with remoteKeyLimitHeader), which refuses every model
-// alike (#2077).
+// alike (#2077). A magpie added by hand, as an OpenAI-compatible provider
+// of its own name, is one all the same: its reply names the provider that
+// answered there (providerHeader, which keepRetry notes as
+// answeredThereHeader), as no vendor's does (lagrangepoint1813
+// on Discord: "Remote Magpie: Claude Code: You've hit your session
+// limit" answered every model of it for the five hours it named).
 func remoteModelRest(c candidate, why string, header http.Header) bool {
-	if !c.p.IsRemoteMagpie() || header.Get(remoteKeyLimitHeader) != "" {
+	if !c.p.IsRemoteMagpie() && header.Get(answeredThereHeader) == "" || header.Get(remoteKeyLimitHeader) != "" {
 		return false
 	}
 	return why == failQuota || why == failCredit || why == failRate || why == failRestricted || why == failVerify
@@ -1357,6 +1367,12 @@ func keepRetry(dst, src http.Header, body []byte) {
 			dst.Set("Retry-After", strconv.Itoa(int(d.Seconds())))
 		}
 	}
+	if who := src.Get(providerHeader); who != "" {
+		// another magpie refused it, naming its provider that did: this
+		// magpie's own name for the provider goes in the same header
+		// (noteMember), so it is noted beside it, for restAfter
+		dst.Set(answeredThereHeader, who)
+	}
 	if note, ok := policyRefusal(body); ok {
 		// the error the agent gets keeps the vendor's words but not its
 		// code (bio_policy): that it was the safety filter goes on beside
@@ -1369,6 +1385,11 @@ func keepRetry(dst, src http.Header, body []byte) {
 		dst.Set(zdrHeader, "1")
 	}
 }
+
+// answeredThereHeader carries, from keepRetry to restAfter, the provider
+// another magpie named on its refusal (providerHeader): the refusal is
+// that magpie's model's (remoteModelRest).
+const answeredThereHeader = "X-Magpie-Answered-There"
 
 // refusedHeader carries, from keepRetry to settle, that an error status
 // was the safety filter refusing the request, and what it said.
@@ -1445,6 +1466,11 @@ type weighing struct {
 	// free is each seat's model costing nothing there, by rest key: filled
 	// only when the routing weighs by it (routes.Strategy.ByFree)
 	free map[string]bool
+
+	// speed is each seat's speed lately, by restID (a group's heads can
+	// be two models on one key): filled only when the routing weighs by
+	// it (routes.Strategy.BySpeed)
+	speed map[string][2]float64
 }
 
 type allowanceKey struct {
@@ -1585,6 +1611,15 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		for i, c := range cs {
 			free := c.p.FreeModel(c.model)
 			seats[i].Free, wg.free[c.rest] = free, free
+		}
+	}
+	if st.BySpeed {
+		// a map lookup each (speed.go): what was measured as answers
+		// ended, never the usage history
+		wg.speed = map[string][2]float64{}
+		for i, c := range cs {
+			seats[i].TTFT, seats[i].TPS = speedOf(c, now)
+			wg.speed[c.restID()] = [2]float64{seats[i].TTFT, seats[i].TPS}
 		}
 	}
 	order := routes.Apply(st, p.ID, seats)

@@ -181,6 +181,7 @@ func TestSettingsSaveKeepsWhatItDoesNotSend(t *testing.T) {
 		QuotaReads:           "asked",
 		NoAccountDiscovery:   true,
 		RedactModel:          true,
+		RedactModelName:      "astrlink-guard",
 		PowerMeter:           true,
 	}
 	was.DesktopSubagentEffort = "high"
