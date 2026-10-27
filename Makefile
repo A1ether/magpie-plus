@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board upstream-archive upstream-archive-check
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -65,6 +65,16 @@ balance-board:
 	@rsync -a --delete-excluded --exclude '*.map' --exclude 'power-meter-sidecar' $(POWER_METER)/dist/ $(POWER_METER_DEST)/
 	@rsync -a $(POWER_METER)/public/ $(POWER_METER_DEST)/public/
 	@echo "  balance board · sidecar installed in $(POWER_METER_DEST) · turn it on in the Balance board page"
+
+# Keeps a copy of yetone/magpie's branches and tags in this repository, under
+# vendor/upstream/, so the project survives upstream deleting its repository.
+# The daily Upstream archive workflow runs the same script; --check reports
+# what is missing without pushing. See FORK.md §14.
+upstream-archive:
+	build/upstream-archive.sh
+
+upstream-archive-check:
+	build/upstream-archive.sh --check
 
 # The browser regressions under internal/gui/tests: the real pages in
 # Playwright's Chromium and WebKit; see internal/gui/tests/README.md.

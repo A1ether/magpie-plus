@@ -1,0 +1,44 @@
+name: Upstream archive
+
+# Keeps a copy of yetone/magpie's source in this repository, so magpie plus
+# survives upstream deleting its repository. Every upstream branch and tag
+# is mirrored under vendor/upstream/ (build/upstream-archive.sh says where
+# and why); a clone of this repository alone then holds the upstream source.
+#
+# The refs are namespaced so this never reaches Release, Test or Docker: no
+# tag is a v*, and no branch is main. The run pushes with GITHUB_TOKEN,
+# whose pushes start no workflow of their own either.
+#
+# A run that cannot reach upstream goes red and changes nothing: the
+# archive keeps what it already had. That is the point of the archive, not
+# a gap in it. Check it by hand with `make upstream-archive-check`.
+
+on:
+  schedule:
+    # 02:23 UTC: the first minutes of an hour are GitHub's busiest.
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # fetch-depth 0: a shallow checkout cannot push whole histories
+      # ("shallow update not allowed"). The script unshallows anyway, so a
+      # change here cannot break the archive quietly.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror upstream's branches and tags here
+        run: build/upstream-archive.sh
+        env:
+          GIT_TERMINAL_PROMPT: "0"

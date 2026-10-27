@@ -525,3 +525,95 @@ go test ./internal/gui -run 'TestBuiltin|TestTray|TestCoreScript|TestForkedAppHa
 - ✅ `go test ./internal/gui -run 'TestCoreScriptBudget|TestPluginScriptBudget'`
 - ✅ 用本机运行中的 sidecar（`/api/summary`，12 平台 / 163 笔）逐账号核对映射：workbuddy 的两个账号（夜雨声烦 / 188****1835）、codearts（IAM 名）、trae-cn、qoder-cn、qoder、minimax-code、qwenwork、raccoon、workbuddy-ai 全部命中；trae-global 没有未来到期批次，返回 unknown（正确）
 - ⚠️ 未跑真实网关请求验证：需要一个真实 `expiry` 池；「一次真实请求按批次顺序落到账号」尚未在真实流量里观察
+
+---
+
+## 14. 上游源码归档（防上游删库）
+
+> 要求：`yetone/magpie` 的源码也必须在本仓库中，以防上游突然删库。
+> 上游 MIT 许可允许这样保存与分发。
+
+### 14.1 源码在哪里
+
+`origin`（`A1ether/magpie-plus`）里保存上游源码的是两组引用：
+
+| 引用 | 内容 |
+|---|---|
+| `refs/heads/vendor/upstream/<branch>` | 上游每个分支的最新提交（含 `main`） |
+| `refs/tags/vendor/upstream/<tag>` | 上游每个 tag（每个正式版本一个） |
+
+`main` 的历史里本来也有上游：每次 `git merge upstream/main` 后，`upstream/main`
+是 `origin/main` 的祖先。归档引用补的是**两次合并之间**的部分：上游新增的提交、
+非 `main` 分支、全部 tag。上游一天几十个 commit，这个窗口现在是十几个小时。
+
+`git clone` 默认拉取全部分支以及指向它们的 tag，所以克隆本仓库就自带上游源码，
+不依赖 `github.com/yetone/magpie` 是否还在。
+
+### 14.2 为什么放在 `vendor/upstream/` 下
+
+不能直接用上游的引用名：
+
+- `refs/tags/v*` 会触发 `.github/workflows/release.yml`——把上游 1700 多个历史 tag
+  推上去等于触发 1700 多次发布；`pf-v*` 还会触发 privacy-filter。
+- `refs/heads/main` 会触发 `test.yml` 的全量测试。
+- `vendor/upstream/` 的 tag 不匹配 `v*` / `pf-v*`，分支不匹配 `main` / `pf/**`，
+  不会触发任何工作流。
+
+### 14.3 保持最新
+
+| 入口 | 频率 | 说明 |
+|---|---|---|
+| `.github/workflows/upstream-archive.yml` | 每天 02:23 UTC | 用 `GITHUB_TOKEN` 推送；该 token 的推送不会再触发其它工作流 |
+| `make upstream-archive` | 手动 | 本地跑同一个脚本 |
+| `make upstream-archive-check` | 手动 | 只 fetch + 核对，不推送 |
+
+脚本 `build/upstream-archive.sh` 的规则：
+
+1. **只前进，不后退**：普通 `git push`（无 `--force`）。上游 force-push 的分支、
+   被移动的 tag 会被拒绝，脚本报出并返回非零；其余引用照常归档。
+2. **上游删除的引用，归档里保留**：fetch 用 `--prune` 只清理本地命名空间；
+   push 不带 `--prune`，所以归档不会丢东西。
+3. **推送后从远端核对**（`git ls-remote`），而不是相信 push 的输出；
+   缺失或与上游不一致的引用逐个列出并返回非零。
+4. 仓库是 shallow 时先 `git fetch --unshallow`：shallow 仓库无法推送完整历史
+   （`shallow update not allowed`）。
+5. 推送用 `http.version=HTTP/1.1` + 256MB `http.postBuffer`：首次归档 67MB、
+   1723 个引用，GitHub 在 HTTP/2 下会断（`Error in the HTTP2 framing layer`，
+   随后 `unable to rewind rpc post data`）；换 HTTP/1.1 并给足缓冲区后一次通过。
+   之后的日常推送只有新增引用，很小。
+
+上游仓库不可达时，工作流变红、引用不变——归档保留已有内容，这正是归档的意义。
+
+### 14.4 恢复
+
+```bash
+git clone https://github.com/A1ether/magpie-plus.git
+cd magpie-plus
+
+git checkout vendor/upstream/main          # 上游最新分支
+git checkout vendor/upstream/v0.1.1670     # 某个上游版本
+
+# 不切分支，只导出某个版本的源码
+git archive --format=tar vendor/upstream/v0.1.1670 | tar -x -C /tmp/magpie-0.1.1670
+```
+
+### 14.5 验证
+
+- ✅ 临时目录里用两个本地 bare 仓库（假 upstream / 假 origin）跑通：
+  首次 fetch → push → 核对；第二次幂等；`--check` 不推送；
+  上游 force-push 被拒绝且归档保持旧值；上游删除分支后归档仍保留；
+  归档缺 tag 时 `--check` 报 missing 并返回非零。
+- ✅ 对真实上游全量跑进临时归档仓库：**6 个分支 / 1717 个 tag**，约 11 秒；
+  归档的 `vendor/upstream/main` 与 `upstream/main` 同一提交，第二次运行为
+  `Everything up-to-date`。
+- ✅ 2026-10-27 已对 `origin` 实推成功：6 个 `refs/heads/vendor/upstream/*`
+  + 1717 个 `refs/tags/vendor/upstream/*`；随后 `make upstream-archive-check`
+  全部通过。首次推送在 HTTP/2 下断过一次，已按 §14.3 第 5 条修进脚本。
+- ✅ 全新克隆 `origin` 验证（不借助本地仓库或 upstream）：得到
+  `origin/vendor/upstream/*` 6 个分支、1717 个 tag；
+  `git checkout vendor/upstream/main` 正常（6251 个文件），
+  `git checkout vendor/upstream/v0.1.1670` 正常。即上游删库后，
+  只克隆 `A1ether/magpie-plus` 就能拿到上游源码。
+- ✅ `origin` 上这些引用不触发任何工作流：分支不匹配 `main` / `pf/**`，
+  tag 不匹配 `v*` / `pf-v*`。
+
