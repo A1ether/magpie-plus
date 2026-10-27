@@ -42,8 +42,9 @@ const providerUsage = `usage:
                                           compaction=native asks the provider Codex's own compaction and hands
                                           Codex its sealed item as it came (a Responses API, a ChatGPT account,
                                           Copilot), compaction=magpie, the default, has magpie summarise
-                                          routing=smart|order|rotate|usage|pace|weight|free|fast spreads requests
-                                          over its keys or accounts (fast: the one that answered fastest lately first);
+                                          routing=smart|order|rotate|usage|pace|weight|free|fast|expiry spreads requests
+                                          over its keys or accounts (fast: the one that answered fastest lately first;
+                                          expiry: the one whose soonest batch on the Balance board runs out first);
                                           prompt=as-written sends Antigravity the system prompt exactly as written;
                                           prompt=default, the default, breaks up the lines Google answers with a
                                           false 429 (Codex's, Claude Code's, Hermes' old persona) with a zero-width space
@@ -1191,7 +1192,7 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return err
 			}
 			if r == provider.Manual {
-				return fmt.Errorf("routing=manual is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free or fast")
+				return fmt.Errorf("routing=manual is a group's: a provider's keys or accounts are routed smart, order, rotate, usage, pace, weight, free, fast or expiry")
 			}
 			p.Routing = r
 		case "icon":

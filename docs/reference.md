@@ -1471,8 +1471,12 @@ weight is 1 to 1000, `weight=` alone clears them all, and a group in the
 group counts as one member, `weight=group/fast=2`). `fast` (speed first; also `fastest`, `speed`) sends each request to
 the member that answered fastest lately, by the time to its first token
 and how fast it wrote: compare the same model on several API channels and
-the quickest goes first. `magpie provider set <id> routing=fast` does the
-same for one provider's keys. A key has no allowance to weigh, so it goes by its
+the quickest goes first. `expiry` (expiry first; also `expires`, `expiring`,
+`batch`) sends it to the account whose soonest credit batch on the Balance
+board runs out first, so a batch about to be lost is spent before one with
+more time: the power-meter sidecar must be on, and an account it doesn't
+know goes after the ones it does. `magpie provider set <id> routing=fast`
+(or `routing=expiry`) does the same for one provider's keys and accounts. A key has no allowance to weigh, so it goes by its
 order or by what magpie sent it lately — except a sub2api key its owner gave
 a 5-hour, day or 7-day limit: with the provider's Balance URL set to the
 relay's `/v1/usage`, its card shows those windows and routing weighs it by
@@ -1672,6 +1676,14 @@ each of these groups ordered by the share used.
   Replies that aren't streamed tell no speed, and a restart starts the
   measuring over. The Routing page says why the first went first:
   "answered fastest lately — first token in 0.8s, 62 tokens a second".
+- **Expiry first**: the account whose soonest credit batch runs out first,
+  by the Balance board's expiry timeline (the power-meter sidecar must be
+  on). A batch's expiry is what is lost, while a window's reset leaves the
+  next window's allowance, so this is the batch running out tomorrow before
+  the one with a month left. Batches within the same hour count as alike and
+  keep Smart's order; an account the board knows nothing of goes after
+  those it does, in Smart's order; one all but used up goes last. The
+  Routing page says when the batch runs out.
 
 The routings besides Smart are the built-in plugin `rotation` (Routing
 strategies in Plugins › Built-in). It stays on while a provider or group is
@@ -1695,6 +1707,7 @@ depends on the routing:
 | Least used first | Only between accounts with the same share used and the same tokens sent lately. |
 | Weekly pace | Only between accounts in the same pace band that magpie sent the same tokens lately, in practice none since magpie started. |
 | Speed first | Only between those within a tenth of each other's speed, and among those not measured lately. |
+| Expiry first | Only between accounts whose soonest batch runs out in the same hour, or whose expiry isn't known. |
 
 For Claude Code and Codex, *Make first* also signs the agent in to that
 account, because the account the agent is signed in to is first. With

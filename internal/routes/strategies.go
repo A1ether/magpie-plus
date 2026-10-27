@@ -261,11 +261,12 @@ var FreeFirst = Strategy{ByFree: true, Order: func(_ string, seats []Seat) []int
 // Builtin are the routings besides Smart and their strategies, as
 // plugins/rotation registers them.
 var Builtin = map[string]Strategy{
-	provider.Ordered:   Ordered,
-	provider.Rotate:    Rotate,
-	provider.LeastUsed: LeastUsed,
-	provider.Pace:      Pace,
-	provider.Weighted:  Weighted,
-	provider.FreeFirst: FreeFirst,
-	provider.Fastest:   Fastest,
+	provider.Ordered:     Ordered,
+	provider.Rotate:      Rotate,
+	provider.LeastUsed:   LeastUsed,
+	provider.Pace:        Pace,
+	provider.Weighted:    Weighted,
+	provider.FreeFirst:   FreeFirst,
+	provider.Fastest:     Fastest,
+	provider.ExpiryFirst: ExpiryFirst,
 }

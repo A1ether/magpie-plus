@@ -36,6 +36,11 @@ const (
 	// lately — first token, then how fast it wrote — first; one not
 	// measured lately gets a turn now and then to be (routes.Fastest).
 	Fastest = "fast"
+	// ExpiryFirst spends what is about to be lost first: the one whose
+	// soonest credit lot expires earliest goes first, as the power-meter
+	// sidecar's Balance page tells it, so a batch running out today is
+	// spent before one with a month left (routes.ExpiryFirst).
+	ExpiryFirst = "expiry"
 )
 
 // pluginRouting is a routing a plugin serves: "<plugin>/<name>".

@@ -76,12 +76,12 @@ func storedGroups(t *testing.T) []map[string]any {
 }
 
 func TestParseRoutingStays(t *testing.T) {
-	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "fast": "fast", "Fastest": "fast", "speed": "fast", "speed-first": "fast"} {
+	for in, want := range map[string]string{"smart": "", "": "", "order": "order", "In-Order": "order", "rotate": "rotate", "usage": "usage", "least-used": "usage", "fast": "fast", "Fastest": "fast", "speed": "fast", "speed-first": "fast", "expiry": "expiry", "expires": "expiry", "batch": "expiry", "EXPIRY-FIRST": "expiry"} {
 		if got, err := parseRouting(in); err != nil || got != want {
 			t.Errorf("routing %q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	if _, err := parseRouting("cheapest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "fast") || !strings.Contains(err.Error(), "<plugin>/<name>") {
+	if _, err := parseRouting("cheapest"); err == nil || !strings.Contains(err.Error(), "smart, order, rotate, usage") || !strings.Contains(err.Error(), "fast") || !strings.Contains(err.Error(), "expiry") || !strings.Contains(err.Error(), "<plugin>/<name>") {
 		t.Errorf("unknown routing: %v", err)
 	}
 	// a gateway plugin's routing is taken as it is written, and named so

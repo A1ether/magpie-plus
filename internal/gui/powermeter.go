@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/yetone/magpie/internal/powermeterexpiry"
 	"github.com/yetone/magpie/internal/powermeterproc"
 	"github.com/yetone/magpie/internal/powermeterproxy"
 	"github.com/yetone/magpie/internal/settings"
@@ -23,6 +24,11 @@ var (
 	powerMeterMu  sync.Mutex
 	powerMeterSup *powermeterproc.Supervisor
 )
+
+// init hands the expiry routing the sidecar as it is now: the gateway asks
+// this process's supervisor, whose answers follow the setting, so a window
+// that turns the Balance page on or off needs nothing else wired.
+func init() { powermeterexpiry.SetSource(liveSupervisor{}) }
 
 // powerMeterSupervisor returns the supervisor the setting asks for, building
 // and starting it the first time it is on and stopping the one it built when

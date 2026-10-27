@@ -494,6 +494,7 @@ function routingPage(part) {
     weight: ["By weight", "Requests spread over the keys by the weight set beside each: a key weighing 3 takes three requests for every one a key weighing 1 takes, evenly over a few requests. One that fails is passed over while it rests, and the others share its requests; a conversation stays with its key as Stays says."],
     free: ["Free first", "Requests go to what costs nothing first: the models their vendor serves at no cost to this subscription's allowance or credits, in their listed order, and only when those can't answer to one that spends them. Nothing that cost nothing is left unused."],
     fast: ["Speed first", "Requests go to the one that has answered this model fastest lately, by its time to the first token and how fast it writes; those within a tenth of each other keep their listed order. One not measured lately gets one request in five, so it is measured again, and one that fails is passed over while it rests."],
+    expiry: ["Expiry first", "Expiry first: the account whose soonest credit batch runs out earliest goes first — the batch about to be lost is spent before one with more time. An account the Balance board knows nothing of goes after those it does, in Smart's order; one all but used up goes last."],
   };
   // modeOf: a routing's name and what it does, a JS gateway plugin's
   // ("<plugin>/<name>", app.js jsRoutings) as it is named, served or not
@@ -694,6 +695,13 @@ function routingPage(part) {
         if (r.order.some((x) => x !== f && !x.fallback && !x.rest && x.lateTtft))
           return t("Speed first: {who} hasn't answered {model} lately, so it takes this request to be measured — one request in five goes to one not measured.", { who: w, model: f.model });
         return t("Speed first: none has answered {model} lately, so {who}, first in the list, goes first and its answer measures it.", { who: w, model: f.model });
+      }
+      case "expiry": {
+        // Expiry first (routes.ExpiryFirst): when its soonest batch on the
+        // Balance board runs out, as the power-meter sidecar said
+        // (Weighed.expires)
+        if (known0(f.expires)) return t("Expiry first: {who}'s soonest batch on the Balance board runs out in {d}, so {model} is spent there first.", { who: w, d: dur(at(f.expires) - at(r.time)), model: f.model });
+        return t("Expiry first: no batch is known to run out sooner, so {who} goes first in Smart's order.", { who: w });
       }
       case "usage":
         if (f.known) return t("Least used first: {who} has the most of its allowance left — {n} used.", { who: w, n: pct(f.used) });
@@ -4480,7 +4488,7 @@ function routingPage(part) {
   // after the requests: a request picked in the list plays on the stage,
   // so the list sits right under it
   more.append(gsec);
-  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Weekly pace"], ["free", "Free first"], ["fast", "Speed first"]];
+  const ROUTE_OPTS = [["", "Smart"], ["order", "In order"], ["rotate", "In turn"], ["usage", "Least used"], ["pace", "Weekly pace"], ["free", "Free first"], ["fast", "Speed first"], ["expiry", "Expiry first"]];
   // a group may also be routed by hand: every request to the member the
   // user picks on its card (provider.Manual, #317) — a provider's keys can't
   // and by its members' weights, as a provider's keys are (#1910)

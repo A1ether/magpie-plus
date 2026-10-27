@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yetone/magpie/internal/powermeterexpiry"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/routes"
 	"github.com/yetone/magpie/internal/usage"
@@ -1471,6 +1472,11 @@ type weighing struct {
 	// be two models on one key): filled only when the routing weighs by
 	// it (routes.Strategy.BySpeed)
 	speed map[string][2]float64
+
+	// expiry is when each account's soonest credit lot runs out, by rest
+	// key as the power-meter sidecar tells it: filled only when the
+	// routing weighs by it (routes.Strategy.ByExpiry)
+	expiry map[string]time.Time
 }
 
 type allowanceKey struct {
@@ -1587,6 +1593,21 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 		return cs, wg
 	}
 	seats := make([]routes.Seat, len(cs))
+	// an account's soonest batch, read before the lock: a read of the
+	// sidecar's summary is a file of its own, and nothing under the
+	// gateway's routing lock waits on one
+	var expires map[string]time.Time
+	if st.ByExpiry {
+		expires = map[string]time.Time{}
+		for _, c := range cs {
+			if c.p.Account == nil {
+				continue // a key has no account for the board to name
+			}
+			if at, ok := powermeterexpiry.Earliest(c.p.ID, c.p.Account.User); ok {
+				expires[c.restKey()] = at
+			}
+		}
+	}
 	routed.Lock()
 	for i, c := range cs {
 		l, known := wg.lefts[c.allowanceKey()]
@@ -1595,9 +1616,13 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, Soon: l.soon, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits}
+			Used: l.used, Soon: l.soon, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits,
+			Expires: expires[c.restKey()]}
 	}
 	routed.Unlock()
+	if st.ByExpiry {
+		wg.expiry = expires
+	}
 	if st.ByUse {
 		wg.tokens = map[string]float64{}
 		for i, c := range cs {

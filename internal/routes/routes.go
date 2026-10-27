@@ -56,6 +56,10 @@ type Seat struct {
 	// TPS is how fast it wrote them, output tokens a second, 0 when not
 	// told (a reply let go in a burst tells none). Fastest goes by them.
 	TTFT, TPS float64
+	// Expires is when its soonest credit lot runs out, from the power-meter
+	// sidecar's expiry timeline: the batch is lost then, apart from any
+	// window's reset. Zero when it knows none. ExpiryFirst goes by it.
+	Expires time.Time
 }
 
 // Strategy orders a pool.
@@ -78,6 +82,10 @@ type Strategy struct {
 	// BySpeed: it weighs by TTFT and TPS, so the gateway reads each seat's
 	// recent speed, and the routing trace then shows it.
 	BySpeed bool
+	// ByExpiry: it weighs by Expires, so the gateway asks the power-meter
+	// sidecar for each seat's soonest batch, and the routing trace then
+	// shows it.
+	ByExpiry bool
 }
 
 var reg = struct {

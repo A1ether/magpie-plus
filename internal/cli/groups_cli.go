@@ -136,6 +136,7 @@ var routingNames = []struct {
 	{provider.Weighted, "weight", []string{"weighted", "by-weight", "weighted-round-robin", "wrr"}},
 	{provider.FreeFirst, "free", []string{"free-first", "freest", "no-cost"}},
 	{provider.Fastest, "fast", []string{"fastest", "speed", "speed-first"}},
+	{provider.ExpiryFirst, "expiry", []string{"expires", "expiring", "expiry-first", "batch", "batches"}},
 	{provider.Manual, "manual", []string{"pick", "picked", "pinned"}},
 }
 
