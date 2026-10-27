@@ -648,7 +648,9 @@ func singleInstance(h *host) *application.SingleInstanceOptions {
 	if runtime.GOOS == "darwin" || !sessionBus() {
 		return nil
 	}
-	sum := sha256.Sum256([]byte(settings.Dir()))
+	// the app's own identity goes in too, so magpie plus and the magpie it
+	// was forked from are two instances, not one handing to the other
+	sum := sha256.Sum256([]byte(settings.Dir() + "\x00" + appIdentity()))
 	return &application.SingleInstanceOptions{
 		UniqueID: "ai.usemagpie.app.i" + hex.EncodeToString(sum[:6]),
 		OnSecondInstanceLaunch: func(d application.SecondInstanceData) {

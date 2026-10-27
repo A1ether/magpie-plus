@@ -32,7 +32,14 @@ func instanceLock(dir, exe string) string {
 		exe = r
 	}
 	if installedCopy(exe) {
+		// "installed" is one magpie per config, which is what an install is.
+		// Magpie plus is installed too, but on its own config (appdir.Config),
+		// so the "installed" here is that app's, and the two never share a
+		// lock (this fork's appIdentity).
 		exe = "installed"
+		if id := appIdentity(); id != "" {
+			exe = "installed:" + id
+		}
 	}
 	sum := sha256.Sum256([]byte(dir + "\x00" + exe))
 	return filepath.Join(dir, "app-"+hex.EncodeToString(sum[:6])+".lock")

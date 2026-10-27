@@ -9,6 +9,44 @@ import (
 	"testing"
 )
 
+// magpie plus and the magpie it was forked from are two apps on one config
+// folder, and each has to run: the lock an app takes is its own by bundle
+// id (appIdentity), or the second one to start would hand over and quit.
+func TestForkedAppHasItsOwnLock(t *testing.T) {
+	dir := t.TempDir()
+	exe := "/Applications/Magpie.app/Contents/MacOS/magpie"
+	upstream := instanceLock(dir, exe)
+
+	t.Setenv("MAGPIE_IDENTITY", "com.a1ether.magpie-plus")
+	fork := instanceLock(dir, exe)
+	if fork == upstream {
+		t.Fatal("magpie plus shares the lock of the magpie it was forked from")
+	}
+
+	// a copy of the fork anywhere else in an .app is the fork's, and the
+	// upstream app's is still upstream's: it is the app, not the path
+	other := instanceLock(dir, "/Users/someone/Downloads/Magpie.app/Contents/MacOS/magpie")
+	if other != fork {
+		t.Error("another copy of magpie plus has a lock of its own")
+	}
+	t.Setenv("MAGPIE_IDENTITY", "")
+	if instanceLock(dir, exe) != upstream {
+		t.Error("the upstream magpie's lock moved when magpie plus appeared")
+	}
+
+	// a build from source, which has no .app over it, keeps upstream's
+	if dev := instanceLock(dir, "/src/magpie/magpie-dev"); dev == upstream {
+		t.Error("magpie-dev shares the app's lock")
+	}
+
+	// both locks stay in the one config folder they share
+	for _, p := range []string{upstream, fork} {
+		if filepath.Dir(p) != dir {
+			t.Fatalf("lock %s not in the config dir", p)
+		}
+	}
+}
+
 // A second magpie on the same config finds the first one's lock held, a
 // copy elsewhere (magpie-dev) has its own, and a lock whose holder ended,
 // as when the Mac shuts down with magpie running, is free again (Crispin
