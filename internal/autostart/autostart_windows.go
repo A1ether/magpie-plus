@@ -8,7 +8,10 @@ import (
 
 const (
 	runKey = `Software\Microsoft\Windows\CurrentVersion\Run`
-	name   = "magpie"
+	// name is the Run value's own. It is this fork's, not upstream's: both
+	// magpies write the same key, and one name would have each rewrite the
+	// other's login item to point at itself.
+	name = "magpie plus"
 	// where Task Manager's Startup apps keeps an entry switched off: an odd
 	// first byte is off
 	approvedKey = `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`

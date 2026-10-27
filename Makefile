@@ -76,15 +76,22 @@ test-ui:
 	@test -n "$(UI_TESTS)" || { echo "no GUI tests found under internal/gui/tests" >&2; exit 1; }
 	node --test --test-concurrency=$(UI_TEST_CONCURRENCY) $(UI_TESTS)
 
-# macOS bundle: menu bar app with no Dock icon (LSUIElement).
+# macOS bundle: menu bar app with no Dock icon (LSUIElement). This fork's
+# bundle is "magpie plus.app" - what the Finder shows, and what its
+# Info.plist names it (internal/gui/desktop.go's appName is the same name
+# for the window, the menu bar and the Mac's app menu). The program inside
+# keeps the name magpie: the magpie:// links and the terminal's magpie run
+# it.
+APP = magpie plus.app
+
 app: build
-	@rm -rf magpie.app
-	@mkdir -p magpie.app/Contents/MacOS magpie.app/Contents/Resources
-	@cp magpie magpie.app/Contents/MacOS/magpie
-	@cp build/darwin/magpie.icns magpie.app/Contents/Resources/magpie.icns
-	@cp build/darwin/Assets.car magpie.app/Contents/Resources/Assets.car
-	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > magpie.app/Contents/Info.plist
-	@echo "  magpie.app"
+	@rm -rf "$(APP)"
+	@mkdir -p "$(APP)/Contents/MacOS" "$(APP)/Contents/Resources"
+	@cp magpie "$(APP)/Contents/MacOS/magpie"
+	@cp build/darwin/magpie.icns "$(APP)/Contents/Resources/magpie.icns"
+	@cp build/darwin/Assets.car "$(APP)/Contents/Resources/Assets.car"
+	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > "$(APP)/Contents/Info.plist"
+	@echo "  $(APP)"
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png
@@ -140,7 +147,7 @@ release-linux:
 	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
 
 clean:
-	rm -rf magpie magpie.exe magpie.app dist rsrc_windows_*.syso
+	rm -rf magpie magpie.exe magpie.app "magpie plus.app" dist rsrc_windows_*.syso
 
 # Development: the UI is served from internal/gui/assets and the window
 # reloads itself when a file there is saved. With fswatch installed, the

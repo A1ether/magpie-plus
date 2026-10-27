@@ -18,7 +18,9 @@ func record() string {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "autostart", "magpie.desktop")
+	// this fork's own entry, not upstream magpie's: both read this folder,
+	// and one name would have each rewrite the other's login item
+	return filepath.Join(dir, "autostart", "magpie-plus.desktop")
 }
 
 // the two keys a desktop entry needs before the desktop starts it at login:
@@ -44,7 +46,7 @@ func enable(exe string) error {
 	}
 	// the Exec key's quoting: in double quotes, \ " ` $ escaped
 	q := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", `$`, `\$`).Replace(exe)
-	body := "[Desktop Entry]\nType=Application\nName=magpie\nComment=one place to pick every agent's model\n" +
+	body := "[Desktop Entry]\nType=Application\nName=magpie plus\nComment=one place to pick every agent's model\n" +
 		"Exec=\"" + q + "\" " + Arg + "\nTerminal=false\nX-GNOME-Autostart-enabled=true\n"
 	return edit.WriteAtomic(p, []byte(body))
 }

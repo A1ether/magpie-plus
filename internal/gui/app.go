@@ -367,7 +367,7 @@ func Run(version string, showMain bool, link string) error {
 		// second launch); it hands its arguments to the running one and quits.
 		// The Mac sends the link to the running app itself.
 		SingleInstance: singleInstance(h),
-		Name:           "magpie",
+		Name:           appName,
 		Description:    "one place to pick every agent's model",
 		Icon:           appIconFor(),
 		Assets:         application.AssetOptions{Handler: ownWindow(handler)},
@@ -525,7 +525,7 @@ func Run(version string, showMain bool, link string) error {
 		h.tray.SetLabel("magpie")
 		go dropTrayName()
 	}
-	h.tray.SetTooltip("magpie")
+	h.tray.SetTooltip(appName)
 	if icon, template := trayIconFor(runtime.GOOS, traySchemeLight()); template {
 		h.tray.SetTemplateIcon(icon)
 	} else {
@@ -719,7 +719,7 @@ func (h *host) setBird(b []byte) {
 func panelOptions(goos, theme string) application.WebviewWindowOptions {
 	o := application.WebviewWindowOptions{
 		Name:            "panel",
-		Title:           "magpie",
+		Title:           appName,
 		URL:             "/?mode=panel" + theme,
 		Width:           panelWidth,
 		Height:          520,

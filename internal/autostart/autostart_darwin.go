@@ -11,7 +11,10 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 )
 
-const label = "com.yetone.magpie"
+// label is the launch agent's own name. It is this fork's, not upstream's:
+// both magpies read ~/Library/LaunchAgents, and one label would have each
+// rewrite the other's login item to point at itself.
+const label = "com.a1ether.magpie-plus"
 
 func record() string {
 	home, _ := os.UserHomeDir()
