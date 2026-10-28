@@ -365,9 +365,21 @@ make balance-board POWER_METER=~/DevSpace/power-meter
 
 | 结论 | 文件 | 依据 |
 |---|---|---|
-| **上游既有**（base 同样红） | `account-discovery`、`gateway-caller-keys`、`gateway-key-models`、`header-centre`、`menu-input-scroll`、`mobile-web`、`old-webkit`、`plugin-card-update`、`quota-count-wrap`、`routing-intent-entry`、`routing-live-patch`、`routing-manual`、`routing-pause`、`routing-rule-effort`、`routing-rule-remove`、`routing-steady`、`s3-sync`、`search-first`、`usage-agents-hide`、`usage-checkin`、`usage-curve-zoom-back`、`usage-fold`、`usage-ledger`（23 个） | base 上同一批跑出 `426 tests / 301 pass / 125 fail`，这 23 个文件同样失败 |
+| **上游既有**（base 同样红） | `account-discovery`、`gateway-caller-keys`、`gateway-key-models`、`header-centre`、`icon-tile`、`menu-input-scroll`、`mobile-web`、`old-webkit`、`panel-quota-refresh`、`plugin-card-update`、`quota-count-wrap`、`routing-intent-entry`、`routing-live-patch`、`routing-manual`、`routing-pause`、`routing-rule-effort`、`routing-rule-remove`、`routing-steady`、`s3-sync`、`search-first`、`usage-agents-hide`、`usage-checkin`、`usage-curve-zoom-back`、`usage-fold`、`usage-ledger`（25 个） | base 上同一批跑出 `426 tests / 301 pass / 125 fail`，这些文件同样失败。`icon-tile`（`apple-touch-icon is solid to its edges but not in app.css's tile rule`）与 `panel-quota-refresh`（de 360px）是 2026-10-28 又跑一次时新见到的，在 `55a6642a` 上同样红 |
 | **全量负载下的抖动**（单独跑全绿） | `update-check`、`update-mirror`、`update-wait`、`whats-new` | 单独跑 `fail 0` |
 | **已修** | `update-hide`、`update-download-percent`、`quota-curve` | 见下 |
+
+两个跑这套的时候要知道的机制（2026-10-28 又跑一次时查清）：
+
+- `mobile-web.test.cjs` 的「desktop matches origin/main」比的是环境变量 `BASE_REF`，
+  默认 `origin/main`。本仓库的 `origin/main` 是合并上游之前的 main（`55a6642a`，
+  落后 220 个提交），当前树跟它比，每个桌面页都不同，所以这 8 个用例必然全红。
+  要让它有意义得 `BASE_REF=upstream/main`；fork 自己的侧边栏多一项「余额看板」，
+  差异仍会算进去。
+- 并发下会多出**只在这一轮里红**的用例：`gateway-key-models` 的 chromium en 在
+  `--test-concurrency=4` 下红、base 上不红，单独跑 2/2 全绿。判一条红是不是负载抖动，
+  就单跑那一个文件、跑两次，别在大轮里猜。
+
 
 `update-hide` 一开始是我的错：我在 `crowded` 里加了 `.brand .logo svg { width: 15px }`，而 `.brand` 正是 `fitTop` 的 ResizeObserver 观察对象之一——在自己的回调里改它的尺寸，就会再触发一次。去掉这条规则后 `update-hide` 18/18 全绿。
 
