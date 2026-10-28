@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board power-meter-build preview update update-upstream update-power-meter upstream-archive upstream-archive-check
+.PHONY: build cli install test test-ui app install-app icons release release-cli release-windows release-linux clean dev dev-once balance-board power-meter-build preview update update-upstream update-power-meter upstream-archive upstream-archive-check
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -143,6 +143,20 @@ app: build
 	@cp build/darwin/Assets.car "$(APP)/Contents/Resources/Assets.car"
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > "$(APP)/Contents/Info.plist"
 	@echo "  $(APP)"
+
+# Installs it where the Finder and Launchpad look, and leaves one copy: two
+# bundles with one bundle id (the build folder's and this one) show "magpie
+# plus" twice, and the one a click opens is whichever LaunchServices saw
+# last. So the build's copy goes once the installed one is in place.
+INSTALL_DIR ?= /Applications
+LSREGISTER = /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+
+install-app: app
+	@rm -rf "$(INSTALL_DIR)/$(APP)"
+	@ditto "$(APP)" "$(INSTALL_DIR)/$(APP)"
+	@rm -rf "$(APP)"
+	@$(LSREGISTER) -f "$(INSTALL_DIR)/$(APP)" >/dev/null 2>&1 || true
+	@echo "  $(INSTALL_DIR)/$(APP) · $(VERSION) · the build folder's copy is gone, so there is one"
 
 icons:
 	@go run build/icon/gen.go tray internal/gui/tray.png

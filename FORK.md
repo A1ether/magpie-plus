@@ -55,7 +55,7 @@
 ```bash
 make update        # = git subtree pull third_party/power-meter + git merge upstream/main
 make preview       # 构建两边的源码 + 装 sidecar，然后在浏览器里看
-make app           # 看过且确认之后，才构建桌面 app
+make install-app   # 看过且确认之后，才装成桌面 app（/Applications 一份）
 ```
 
 要单独做某一步，或想看清细节（远程、冲突面、预览端口、为什么先网页后桌面）：
