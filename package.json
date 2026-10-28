@@ -1,0 +1,35 @@
+{
+  "name": "power-meter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多平台 AI 账户余额 / 积分看板，聚焦「最快到期」优先消耗",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "probe": "tsx src/cli/probe.ts",
+    "account": "tsx src/cli/account.ts",
+    "a1etheropenai:add": "tsx src/cli/a1etheropenai-add.ts",
+    "capture": "tsx src/cli/capture.ts",
+    "migrate:qoder-sites": "tsx src/cli/migrate-qoder-sites.ts",
+    "codearts:aksk-probe": "tsx src/cli/codearts-aksk-probe.ts",
+    "codearts:console-probe": "tsx src/cli/codearts-console-probe.ts",
+    "codearts:refresh": "bash tools/codearts-refresh.sh",
+    "codearts:schedule": "bash tools/install-codearts-refresh-launchd.sh",
+    "chrome:debug": "tools/chrome-debug.sh",
+    "typecheck": "tsc --noEmit",
+    "test:pagination": "tsx src/cli/test-pagination.ts",
+    "build": "tsc -p tsconfig.json",
+    "serve": "node dist/server.js",
+    "serve:sidecar": "node dist/server.js --port 0 --no-static",
+    "build:sidecar": "npm run build && bun build --compile --minify dist/server.js --outfile dist/power-meter-sidecar"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,218 @@
+{
+  "_comment": [
+    "复制为 accounts.json 后按需修改（该文件已被 .gitignore 忽略）。",
+    "推荐流程：npm run chrome:debug → 在弹出窗口登录 → npm run capture 自动抓取凭证。",
+    "credentials 用 ${ENV_VAR} 引用 .env，避免把凭证明文写进文件。",
+    "保存后服务会自动热加载，无需重启。",
+    "provider 支持：qoder / qoder-intl / trae / trae-global / codebuddy / codebuddy-intl / codearts / a1etheropenai / minimax / xiaohuanxiong / qwenwork / custom / demo:*",
+    "Trae 国内站与国际站同样独立：provider 取 trae（trae.cn，凭证 TRAE_*）或",
+    "     trae-global（trae.ai，凭证 TRAE_GLOBAL_*），npm run capture -- trae-global 抓取国际站。",
+    "Qoder 国内站与国际站是两个独立平台：provider 取 qoder（qoder.com.cn，凭证 QODER_*）或",
+    "     qoder-intl（qoder.com，凭证 QODER_GLOBAL_*）。站点由平台决定，不再有 options.site，",
+    "     一个平台的账号只出现在该平台的卡片上。",
+    "     npm run capture -- qoder-intl 抓取国际站，npm run account -- --provider qoder-intl 注册。",
+    "     旧配置（provider: qoder 且 options.site: global）用 npm run migrate:qoder-sites 迁移。",
+    "MiniMax Code（minimax）凭证较特殊：请求头 token（localStorage `_token`）+ SSO 会话 Cookie +",
+    "     真实身份 userId/uuid（公共参数，服务端会与 token 交叉校验），缺一不可；",
+    "     opTicket 仅当 capture 抓到了 op_ticket 时才需要在 credentials 里加 \"opTicket\"。",
+    "     推荐 npm run capture -- minimax 一次性抓取（写入 .env 的 MINIMAX_* 变量）。",
+    "     看板上的积分 = MiniMax Code 的签到积分 + 购买积分（按批次带 30 天到期时间）。",
+    "商汤小浣熊（xiaohuanxiong）凭证是网页登录态：接口只认 Authorization: Bearer，令牌就在",
+    "     Cookie 的 xhx_token / raccoon_token 里。推荐卡片上的「网页端登录」，或",
+    "     npm run capture -- xiaohuanxiong（写入 XIAOHUANXIONG_COOKIE / _TOKEN / _REFRESH_TOKEN）。",
+    "     卡片按官方四类积分拆批次：每日赠送（当日 24:00 失效，登录后延长至 7 天）、",
+    "     每月赠送（随订阅周期）、加油包（永久有效）、奖励积分（1 年）。",
+    "千问办公（qwenwork）也是网页登录态 Cookie（生产环境不带 Authorization）：",
+    "     推荐卡片上的「网页端登录」，或 npm run capture -- qwenwork（写入 QWENWORK_COOKIE）。",
+    "     卡片按页面三桶拆批次：每日刷新（北京时间 00:00 刷新）、每月订阅（随 next_refresh_date）、",
+    "     长期积分（充值 / 活动赠送，拿不到到期时间就不标）。",
+    "CodeArts 华为云推荐用 AK/SK（credentials.accessKey/secretKey，读 .env 的 CODEARTS_AK/CODEARTS_SK）：",
+    "     走 snap-access 网关、长期有效，不像控制台登录态那样会过期；cookie 可留作兜底，",
+    "     也可用 options.authMode 强制 \"aksk\" 或 \"cookie\"。",
+    "     调试入口：npm run codearts:aksk-probe（只读，输出脱敏）。",
+    "A1etherOpenAi 的增删都在看板卡片上直接做（「＋ 添加账号」/ 每条右侧的 ✕），",
+    "     或命令行 `npm run a1etheropenai:add`，两者是同一份实现，都不用手工改本文件。",
+    "A1etherOpenAi 可有多个账号：靠 credentials.apiKey 查额度，",
+    "         并把 credentials.paiApiKey（A1etherOpenAi_PAI_API_KEY）交给看板托管、一键复制。",
+    "     displayName 现在是账号的稳定标识（/api/reveal 靠它定位），界面显示的是邮箱。",
+    "A1etherOpenAi 的额度单位是 QUOTA 且永不过期：钱包 USD 不显示（1 USD = 500,000 quota，",
+    "     但钱包恒定虚高），也不参与「最快到期」。",
+    "整个 A1etherOpenAi 只占一张卡片：所有 a1etheropenai 账号会被合并成一张卡，一条条列出密钥与额度。",
+    "CodeBuddy / Qoder / Trae 推荐用看板上的「＋ 登录 / 添加账号」：扫码或打开链接授权后",
+    "     自动写 .env 并注册账号，一个账号一张卡片；再次登录同一账号只刷新凭证，不会新增卡片。",
+    "     令牌模式（accessToken/refreshToken）与 Cookie 二选一，Cookie 优先；",
+    "     Trae 的令牌模式还需要 credentials.deviceKey（登录时自动写入）。",
+    "多账号（同一个平台的第二个及以后的账号）：displayName 必须唯一——它是账号的稳定标识，",
+    "     重名会让两张账号共用同一份取数结果（服务启动日志与看板「诊断」区会就此告警）。",
+    "     Cookie 平台的每个账号各占一个 .env 变量：第一个用 CODEBUDDY_COOKIE，",
+    "     第二个用 CODEBUDDY_COOKIE_2（可用 npm run capture -- codebuddy --slot 2 抓取），",
+    "     以此类推；每个账号各占一张卡片（CodeBuddy 的积分批次带到期时间，不合并才能",
+    "     保留各自的最快到期信息）。",
+    "     推荐用看板卡片上的「＋ 添加账号」或 npm run account 添加，会自动分配槽位与命名。"
+  ],
+  "accounts": [
+    {
+      "provider": "qoder",
+      "displayName": "Qoder 国内版",
+      "enabled": true,
+      "credentials": {
+        "cookie": "${QODER_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "qoder-intl",
+      "displayName": "Qoder 国际版",
+      "enabled": false,
+      "credentials": {
+        "cookie": "${QODER_GLOBAL_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "trae",
+      "displayName": "Trae",
+      "enabled": true,
+      "credentials": {
+        "cookie": "${TRAE_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "trae-global",
+      "displayName": "Trae 国际版",
+      "enabled": false,
+      "credentials": {
+        "cookie": "${TRAE_GLOBAL_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "codebuddy",
+      "displayName": "CodeBuddy",
+      "enabled": true,
+      "credentials": {
+        "cookie": "${CODEBUDDY_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "codebuddy",
+      "displayName": "CodeBuddy · 账号 2",
+      "enabled": false,
+      "credentials": {
+        "cookie": "${CODEBUDDY_COOKIE_2}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "codebuddy-intl",
+      "displayName": "WorkBuddy 国际版",
+      "enabled": false,
+      "credentials": {
+        "cookie": "${CODEBUDDY_GLOBAL_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "codearts",
+      "displayName": "CodeArts 华为云",
+      "enabled": true,
+      "credentials": {
+        "accessKey": "${CODEARTS_AK}",
+        "secretKey": "${CODEARTS_SK}",
+        "cookie": "${CODEARTS_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "minimax",
+      "displayName": "MiniMax Code",
+      "enabled": true,
+      "credentials": {
+        "token": "${MINIMAX_CODE_TOKEN}",
+        "cookie": "${MINIMAX_COOKIE}",
+        "userId": "${MINIMAX_USER_ID}",
+        "paramToken": "${MINIMAX_PARAM_TOKEN}",
+        "uuid": "${MINIMAX_UUID}"
+      },
+      "options": {
+        "site": "cn"
+      }
+    },
+    {
+      "provider": "xiaohuanxiong",
+      "displayName": "商汤小浣熊",
+      "enabled": false,
+      "credentials": {
+        "token": "${XIAOHUANXIONG_TOKEN}",
+        "refreshToken": "${XIAOHUANXIONG_REFRESH_TOKEN}",
+        "cookie": "${XIAOHUANXIONG_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "qwenwork",
+      "displayName": "千问办公",
+      "enabled": false,
+      "credentials": {
+        "cookie": "${QWENWORK_COOKIE}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "a1etheropenai",
+      "displayName": "A1etherOpenAi · 账号 A",
+      "enabled": false,
+      "credentials": {
+        "apiKey": "${A1etherOpenAi_A_API_KEY}",
+        "paiApiKey": "${A1etherOpenAi_A_PAI_API_KEY}"
+      },
+      "options": {}
+    },
+    {
+      "provider": "a1etheropenai",
+      "displayName": "A1etherOpenAi · 账号 B",
+      "enabled": false,
+      "credentials": {
+        "apiKey": "${A1etherOpenAi_B_API_KEY}",
+        "paiApiKey": "${A1etherOpenAi_B_PAI_API_KEY}"
+      },
+      "options": {
+        "revealApiKey": false
+      }
+    },
+    {
+      "provider": "custom",
+      "displayName": "自建/第三方平台示例",
+      "enabled": false,
+      "credentials": {},
+      "options": {
+        "providerId": "custom-a",
+        "endpoint": "https://your-gateway.example.com/api/usage",
+        "method": "GET",
+        "headers": {
+          "Authorization": "Bearer ${CUSTOM_API_KEY}"
+        },
+        "mapping": {
+          "wrap": "data",
+          "balance": { "path": "remaining", "currency": "USD" },
+          "creditLots": {
+            "path": "grants",
+            "amount": "remaining",
+            "expiresAt": "expiresAt",
+            "label": "name",
+            "currency": "USD"
+          }
+        }
+      }
+    },
+    {
+      "provider": "demo:no-expiry",
+      "displayName": "示例 · 无过期时间",
+      "enabled": false,
+      "credentials": {},
+      "options": {}
+    }
+  ]
+}

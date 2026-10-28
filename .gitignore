@@ -1,0 +1,19 @@
+node_modules/
+dist/
+# sidecar 单文件二进制（bun build --compile 产物，83M，不入库）
+dist/power-meter-sidecar
+.env
+accounts.json
+*.log
+.DS_Store
+
+# playwright-cli 的快照 / 报告产物（含账号数据，不入库）
+.playwright-cli/
+
+# 本机一键启动脚本与运行时状态（仅本地使用）
+start.command
+start.sh
+.run/
+
+/.workbuddy
+/out

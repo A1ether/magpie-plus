@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Power Meter · 多平台余额看板</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="glow" aria-hidden="true"></div>
+    <div class="grain" aria-hidden="true"></div>
+
+    <div class="shell">
+      <!--
+        左侧导航（教程「滑动高亮块」+「就地展开子菜单」+「状态点与计数微标」）：
+        .nav__pill 是那块宽度跟着文字伸缩的高亮底色，位置由 app.js 按当前项量出来；
+        子菜单由 app.js 按 /api/summary 的 providers 动态填充，不写死在 HTML 里。
+      -->
+      <aside class="rail" id="rail">
+        <div class="rail__brand">
+          <span class="logo" aria-hidden="true"></span>
+          <span class="rail__brand-text">
+            <strong>Power Meter</strong>
+            <small>A1ether&rsquo;s 额度看板</small>
+          </span>
+        </div>
+
+        <nav class="nav" id="nav" aria-label="区块导航">
+          <!-- 初始 is-hidden：尺寸为 0 时若还带描边，会在导航左上角留下一个像素点 -->
+          <span class="nav__pill is-hidden" aria-hidden="true"></span>
+
+          <a class="nav__item" href="#overview" data-nav-item data-target="summary">
+            <span class="nav__label">总览</span>
+            <span class="nav__badge" id="nav-badge-platforms">–</span>
+          </a>
+
+          <button class="nav__item nav__item--group" type="button" id="nav-group-platforms"
+                  aria-expanded="false" aria-controls="nav-platforms">
+            <span class="nav__label">按平台</span>
+            <span class="nav__caret" aria-hidden="true">⌄</span>
+          </button>
+          <!-- 就地展开的子菜单：一行一个平台，右侧是它的到期状态点 -->
+          <div class="nav__sub" id="nav-platforms" hidden></div>
+
+          <a class="nav__item" href="#providers" data-nav-item data-target="providers">
+            <span class="nav__label">额度卡片</span>
+            <span class="nav__badge" id="nav-badge-providers">–</span>
+          </a>
+
+          <a class="nav__item" href="#timeline-panel" data-nav-item data-target="timeline-panel">
+            <span class="nav__label">到期时间线</span>
+            <span class="nav__badge nav__badge--warn" id="nav-badge-timeline">–</span>
+          </a>
+
+          <a class="nav__item" href="#diagnostics-panel" data-nav-item data-target="diagnostics-panel">
+            <span class="nav__label">诊断</span>
+            <span class="nav__badge nav__badge--danger" id="nav-badge-diag">–</span>
+          </a>
+        </nav>
+
+        <div class="rail__foot">
+          <button class="rail__cmd" type="button" id="cmd-open" aria-label="打开命令面板">
+            <span>命令面板</span>
+            <kbd>⌘K</kbd>
+          </button>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <div class="topbar__head">
+            <h1 id="page-title">总览</h1>
+            <p id="subtitle">多平台余额 / 积分看板</p>
+          </div>
+
+          <div class="topbar__actions">
+            <span class="status" id="status-chip">
+              <span class="status__dot" aria-hidden="true"></span>
+              <span id="status-text">等待数据</span>
+            </span>
+            <button class="btn btn--ghost" id="cmd-btn" type="button">
+              <span>搜索</span><kbd>⌘K</kbd>
+            </button>
+            <button class="btn" id="platforms-btn" type="button">平台与账号</button>
+            <label class="switch" title="每 5 分钟自动刷新">
+              <input type="checkbox" id="auto-refresh" checked />
+              <span>自动刷新</span>
+            </label>
+            <button class="btn btn--primary" id="refresh-btn" type="button">立即刷新</button>
+          </div>
+        </header>
+
+        <main class="wrap">
+          <section class="summary" id="summary" data-section="summary" aria-label="总体汇总"></section>
+
+          <section class="alert" id="alert" data-section="alert" hidden></section>
+
+          <section class="toolbar" data-section="toolbar" aria-label="排序与筛选">
+            <div class="toolbar__group">
+              <label for="sort">排序</label>
+              <select id="sort">
+                <option value="expiry">最快到期优先</option>
+                <option value="risk">仅看有到期风险的</option>
+                <option value="amount-asc">余额从少到多</option>
+                <option value="amount-desc">余额从多到少</option>
+                <option value="status">异常优先</option>
+                <option value="name">按名称</option>
+              </select>
+            </div>
+
+            <div class="toolbar__group">
+              <label for="search">筛选</label>
+              <input id="search" type="search" placeholder="平台名 / 批次 / 币种" />
+            </div>
+
+            <div class="toolbar__meta" id="meta"></div>
+          </section>
+
+          <section class="grid" id="grid" data-section="providers" aria-live="polite"></section>
+
+          <section class="panel" id="timeline-panel" data-section="timeline-panel" aria-label="到期时间线">
+            <div class="panel__head">
+              <h2>到期时间线</h2>
+              <p class="muted">按过期时间升序，优先消耗排在最前面的积分</p>
+            </div>
+            <ol class="timeline" id="timeline"></ol>
+          </section>
+
+          <section class="panel" id="diagnostics-panel" data-section="diagnostics-panel" aria-label="诊断信息">
+            <div class="panel__head">
+              <h2>诊断</h2>
+              <p class="muted">凭证与配置问题会在这里提示</p>
+            </div>
+            <div id="diagnostics" class="diagnostics"></div>
+          </section>
+        </main>
+
+        <footer class="footer">
+          <span id="footer-updated"></span>
+          <span>凭证默认只留在本机；仅在点击「显示 / 复制」时按需读取，且只允许本机访问</span>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 移动端底部停靠栏（教程「底部停靠栏」）：≤1024px 时替代左侧导航 -->
+    <nav class="dock" id="dock" aria-label="快捷导航">
+      <span class="dock__pill is-hidden" aria-hidden="true"></span>
+      <button class="dock__item" type="button" data-nav-item data-target="summary">总览</button>
+      <button class="dock__item" type="button" data-nav-item data-target="providers">额度</button>
+      <button class="dock__item" type="button" data-nav-item data-target="timeline-panel">时间线</button>
+      <button class="dock__item" type="button" id="dock-cmd">搜索</button>
+    </nav>
+
+    <!-- 命令面板（教程「命令面板」）：⌘K / Ctrl+K 唤起，键盘 ↑↓ 选择、↵ 执行 -->
+    <dialog class="cmd" id="cmd" aria-label="命令面板">
+      <div class="cmd__box">
+        <div class="cmd__search">
+          <span class="cmd__icon" aria-hidden="true">⌕</span>
+          <input class="cmd__input" id="cmd-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="搜索平台、跳转区块或执行命令…" aria-label="命令面板输入" />
+          <kbd>Esc</kbd>
+        </div>
+        <ul class="cmd__list" id="cmd-list" role="listbox" aria-label="命令结果"></ul>
+        <p class="cmd__empty" id="cmd-empty" hidden>没有匹配的结果</p>
+        <div class="cmd__foot">
+          <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+          <span><kbd>↵</kbd> 执行</span>
+          <span class="cmd__foot-hint" id="cmd-hint"></span>
+        </div>
+      </div>
+    </dialog>
+
+    <template id="card-template">
+      <article class="card">
+        <div class="card__glow" aria-hidden="true"></div>
+        <header class="card__head">
+          <div class="card__title">
+            <span class="dot"></span>
+            <h3 class="card__name"></h3>
+          </div>
+          <div class="card__tags"></div>
+        </header>
+
+        <div class="card__balance">
+          <span class="card__amount">–</span>
+          <span class="card__currency"></span>
+          <!--
+            卡片级账号操作贴着额度右侧，三种形态由 app.js 按快照分流（见 buildCard）：
+              - 单账号卡片：「重新登录」（凭证过期）+「删除」（删掉这张卡的账号）；
+              - 合并卡片（A1etherOpenAi）：只有「＋ 添加账号」，删除挂在每条账号行上；
+              - 不可管理的平台：三个按钮全隐藏。
+            展开的面板（登录块 + 手工凭证兜底）在下面 .manage-slot 里。
+          -->
+          <div class="card__actions">
+            <button class="secret__btn secret__btn--primary manage__toggle" type="button"
+                    aria-expanded="false" hidden>＋ 添加账号</button>
+            <button class="secret__btn manage__relogin" type="button"
+                    aria-expanded="false" hidden>重新登录</button>
+            <button class="secret__btn secret__btn--danger manage__remove" type="button"
+                    hidden>删除</button>
+          </div>
+        </div>
+        <p class="card__plan muted"></p>
+
+        <!-- 日级用量 / 增量：来自后端 dailyUsage；平台声明了 usageUrl 时整块是跳转到用量页的外链 -->
+        <a class="usage" hidden target="_blank" rel="noreferrer noopener">
+          <div class="usage__grid"></div>
+        </a>
+
+        <!-- 管理区由 #manage-template 克隆进来：卡片与「平台与账号」弹窗共用同一套登录 / 表单 / 删除逻辑 -->
+        <div class="manage-slot"></div>
+
+        <div class="meter" hidden>
+          <div class="meter__bar"><span class="meter__fill"></span></div>
+          <div class="meter__legend"><span class="meter__left"></span><span class="meter__right"></span></div>
+        </div>
+
+        <div class="lots">
+          <div class="lots__head">
+            <span>可用积分批次</span>
+            <span>过期 / 剩余</span>
+          </div>
+          <ul class="lots__list"></ul>
+        </div>
+
+        <!-- 多账号合并的平台：一条账号一行，托管密钥与它的额度并排 -->
+        <div class="entries" hidden>
+          <div class="entries__head">
+            <span>账号 · 托管密钥</span>
+            <span>可用额度</span>
+          </div>
+          <div class="entries__list"></div>
+        </div>
+
+        <!-- 单账号平台：卡片级托管密钥 -->
+        <div class="secrets" hidden>
+          <div class="secrets__head">
+            <span>托管密钥</span>
+            <span>仅本机可读 · 点击复制</span>
+          </div>
+          <div class="secrets__list"></div>
+        </div>
+
+        <p class="card__note" hidden></p>
+
+        <footer class="card__foot">
+          <span class="card__updated muted"></span>
+          <a class="card__link" target="_blank" rel="noreferrer noopener">打开面板 ↗</a>
+        </footer>
+      </article>
+    </template>
+
+    <!--
+      管理区模板：卡片内（追加账号）与顶栏「平台与账号」弹窗（首次添加）共用。
+      登录入口：适配器声明了 login（CodeBuddy / Qoder / Trae）才出现；
+      二维码由 public/vendor/qrcode.js 在本地绘制，authUrl 不出本机。
+    -->
+    <template id="manage-template">
+      <div class="manage" hidden>
+        <div class="login" hidden>
+          <div class="login__head">
+            <!-- 登录按钮组：由 /api/providers 的 loginMethods 声明驱动（渲染多少个、
+                 文案、是否带二维码都来自声明，前端不认平台名）。只有一个方法的
+                 平台照旧渲染单个按钮，视觉与之前完全一致 -->
+            <span class="login__buttons"></span>
+            <span class="login__hint muted"></span>
+          </div>
+          <div class="login__panel" hidden>
+            <div class="login__qr">
+              <canvas class="login__canvas" width="240" height="240" hidden></canvas>
+              <p class="login__qr-fallback muted" hidden></p>
+            </div>
+            <div class="login__info">
+              <p class="login__status"></p>
+              <a class="login__link" target="_blank" rel="noreferrer noopener" hidden>在新窗口打开登录页 ↗</a>
+              <div class="login__actions">
+                <button class="login__copy secret__btn" type="button">复制链接</button>
+                <button class="login__cancel secret__btn" type="button">取消</button>
+              </div>
+              <p class="login__note muted"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 手工凭证：登录能力缺失或登录失败时的兜底入口，默认折叠 -->
+        <details class="manage__manual">
+          <summary>填写凭证</summary>
+          <form class="manage__form">
+            <!-- 凭证字段由适配器声明驱动（/api/providers 的 manageFields），前端不认平台名 -->
+            <div class="manage__fields"></div>
+            <label class="manage__field">
+              <span>账号备注名（可选）</span>
+              <input type="text" name="accountName" autocomplete="off" spellcheck="false"
+                     placeholder="留空自动命名，如「CodeBuddy · 账号 2」" />
+            </label>
+            <div class="manage__actions">
+              <button class="manage__submit" type="submit">验证并添加</button>
+              <button class="manage__cancel" type="button">取消</button>
+            </div>
+            <p class="manage__hint"></p>
+          </form>
+        </details>
+
+        <p class="manage__result" hidden></p>
+
+        <div class="manage__hidden" hidden>
+          <p class="manage__hidden-title"></p>
+          <div class="manage__hidden-list"></div>
+        </div>
+      </div>
+    </template>
+
+    <!-- 「平台与账号」弹窗：没有账号的平台也能在这里添加（入口常驻顶栏） -->
+    <dialog class="dialog" id="platforms-dialog" aria-label="平台与账号">
+      <div class="dialog__head">
+        <div>
+          <h2 id="platforms-title">平台与账号</h2>
+          <p class="muted" id="platforms-subtitle">登录或填写凭证，成功后自动写入本机配置</p>
+        </div>
+        <button class="dialog__close" id="platforms-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="dialog__body" id="platforms-body"></div>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
