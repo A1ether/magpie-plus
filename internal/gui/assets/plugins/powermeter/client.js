@@ -32,13 +32,13 @@ magpie.plugin("powermeter", (ctx) => {
   <div class="pm-body" id="pmBody" hidden>
     <section class="pm-totals" id="pmTotals"></section>
 
-    <div class="row-head"><button class="fold" type="button" data-fold="cards" aria-expanded="true" aria-controls="pmCards"><span class="label" data-t>Balance cards</span></button>
-      <span class="row-sub" data-t>Every provider, lowest balance first</span></div>
-    <section class="pm-cards" id="pmCards"></section>
-
     <div class="row-head"><button class="fold" type="button" data-fold="timeline" aria-expanded="true" aria-controls="pmTimeline"><span class="label" data-t>Expiry timeline</span></button>
-      <span class="row-sub" data-t>Every credit lot, by expiry</span></div>
+      <span class="row-sub" data-t>Every credit lot, by expiry, and how much of it is left</span></div>
     <section class="pm-timeline" id="pmTimeline"></section>
+
+    <div class="row-head"><button class="fold" type="button" data-fold="cards" aria-expanded="true" aria-controls="pmCards"><span class="label" data-t>Balance cards</span></button>
+      <span class="row-sub" data-t>Every provider, lowest balance first, with today's and yesterday's use</span></div>
+    <section class="pm-cards" id="pmCards"></section>
 
     <div class="row-head"><button class="fold" type="button" data-fold="accounts" aria-expanded="false" aria-controls="pmAccounts"><span class="label" data-t>Accounts</span></button>
       <span class="row-sub" data-t>Add, sign in, or remove a provider's accounts</span></div>

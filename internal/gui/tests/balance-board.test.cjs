@@ -16,20 +16,38 @@ const { chromium, webkit } = require("playwright");
 
 const assets = path.resolve(__dirname, "../assets");
 
-// what power-meter's /api/summary answers with for a sidecar that is up
-const summary = () => ({
-  totals: { providers: 2, ok: 1, failed: 1, availableByCurrency: { USD: 42.5, CNY: 8 } },
-  providers: [
-    { provider: "qoder", displayName: "Qoder", plan: "Pro", status: "ok", balance: { amount: 12.5, currency: "USD" } },
-    { provider: "trae", displayName: "Trae", status: "error", message: "403 from the vendor" },
-  ],
-  expiryTimeline: [
-    { label: "Qoder credits", provider: "qoder", amount: 500, currency: "credits", inDays: 3, cnyValue: 8 },
-  ],
-  expiryThresholds: { criticalDays: 5, warningDays: 14 },
-  warnings: [],
-  missingEnvVars: [],
-});
+// what power-meter's /api/summary answers with for a sidecar that is up,
+// in the shape the sidecar really sends (src/types.ts): a lot carries its
+// lotLabel and displayName, the granted total beside what is left, the
+// expiry as a moment, and its yuan value as cny; a card carries its own lots
+// and the day's four figures.
+const summary = () => {
+  const expiresAt = new Date(Date.now() + 3 * 86400000).toISOString();
+  return {
+    totals: { providers: 2, ok: 1, failed: 1, availableByCurrency: { USD: 42.5, CNY: 8 } },
+    providers: [
+      {
+        provider: "qoder", displayName: "Qoder", plan: "Pro", status: "ok",
+        balance: { amount: 12.5, currency: "USD" },
+        credits: [{ id: "qoder-1", label: "Qoder credits", amount: 500, currency: "credits", expiresAt, note: "", basis: "remaining", granted: 800 }],
+        dailyUsage: {
+          todayUsed: 12, yesterdayUsed: 40, todayAdded: 5, yesterdayAdded: 0, currency: "USD",
+          sources: { todayUsed: "upstream", yesterdayUsed: "upstream", todayAdded: "local", yesterdayAdded: "local" },
+        },
+      },
+      { provider: "trae", displayName: "Trae", status: "error", message: "403 from the vendor", credits: [], dailyUsage: null },
+    ],
+    expiryTimeline: [
+      {
+        provider: "qoder", displayName: "Qoder", lotId: "qoder-1", lotLabel: "Qoder credits",
+        amount: 500, granted: 800, currency: "credits", expiresAt, inDays: 3, cny: 8, cnyNote: "",
+      },
+    ],
+    expiryThresholds: { criticalDays: 5, warningDays: 14 },
+    warnings: [],
+    missingEnvVars: [],
+  };
+};
 
 // serve is the window's backend with the sidecar's state in sidecar.state:
 // "disabled" (the setting off), "starting", "down" or "up". The switch's POST
@@ -190,11 +208,43 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           .find(([label]) => label === t("Failed")),
       );
       assert.deepEqual(failed, [await word(page, "Failed"), "1"], `the failed count is drawn: ${JSON.stringify(failed)}`);
-      // the nearest lot reads as days away, and its value in yuan
+      // the nearest lot reads as days away, to the minute, and its value in yuan
       const lot = await page.locator("#pmTimeline").textContent();
-      assert.ok(lot.includes(await word(page, "within {n} days", { n: 3 })), `the lot says how soon: ${lot}`);
+      assert.ok(lot.includes(await word(page, "{n} days left", { n: 3 })), `the lot says how soon: ${lot}`);
       assert.ok(lot.includes("¥8"), `the lot says what it is worth: ${lot}`);
+      assert.match(lot, /\d{2}:\d{2}/, `the expiry is a moment, not a day: ${lot}`);
       assert.equal(await page.locator("#pmTimeline .pm-lot").first().getAttribute("class"), "pm-lot pm-lv-critical");
+
+      // the bar is what is left of what the lot was granted (500 of 800), not
+      // the amount against itself
+      assert.equal(
+        await page.locator("#pmTimeline .pm-lot-bar-fill").first().evaluate((n) => n.style.getPropertyValue("--w")),
+        "62.5%",
+        "the lot's bar is its remaining share of the granted total",
+      );
+      // and its caption says both figures in words
+      const cap = await page.locator("#pmTimeline .pm-lot-caption").first().textContent();
+      assert.ok(cap.includes(await word(page, "Remaining {left} of {granted}", { left: "500", granted: "800" })), `the caption says what is left of what: ${cap}`);
+
+      // a card carries the day's four figures, each named
+      const usage = await page.evaluate(() =>
+        [...document.querySelectorAll("#pmCards .pm-card")[0].querySelectorAll(".pm-usage-cell")]
+          .map((c) => [c.querySelector(".pm-usage-k").textContent, c.querySelector(".pm-usage-v").textContent]),
+      );
+      assert.deepEqual(
+        usage.map(([k]) => k),
+        [await word(page, "Today used"), await word(page, "Yesterday used"), await word(page, "Today added"), await word(page, "Yesterday added")],
+        `the card names every figure: ${JSON.stringify(usage)}`,
+      );
+      assert.deepEqual(usage.map(([, v]) => v), ["12", "40", "5", "0"], `the figures are the day's: ${JSON.stringify(usage)}`);
+      // the timeline is the page's first section, the cards the second
+      assert.equal(
+        await page.evaluate(() => Boolean(
+          document.getElementById("pmTimeline").compareDocumentPosition(document.getElementById("pmCards")) & Node.DOCUMENT_POSITION_FOLLOWING,
+        )),
+        true,
+        "the expiry timeline comes before the balance cards",
+      );
 
       // Diagnostics is folded, and says where the config is once opened
       const diag = page.locator('#view-powermeter .fold[aria-controls="pmDiag"]');
