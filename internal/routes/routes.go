@@ -33,6 +33,10 @@ type Seat struct {
 	Used float64
 	// Soon is when its windows renew, the biggest first (Allowance.Renewal)
 	Soon []time.Time
+	// Lapse is when the soonest of what it has left is lost, apart from
+	// its windows' renewals (Allowance.Lapse): zero when not told. Smart
+	// goes by it when Soon ties.
+	Lapse time.Time
 	// Pace is its week left per hour until that renews; an account not
 	// known has a whole week (provider.FreshPace), a key none
 	Pace float64
@@ -60,6 +64,15 @@ type Seat struct {
 	// sidecar's expiry timeline: the batch is lost then, apart from any
 	// window's reset. Zero when it knows none. ExpiryFirst goes by it.
 	Expires time.Time
+	// Left is a prepaid wallet's balance, what it has left in its unit
+	// (provider.Allowance.Left, #3950), and LeftIn whose wallet that is:
+	// its provider and unit, empty when no balance was told. A wallet has
+	// no share and no renewal, so Used and Soon tie; Smart, Pace and
+	// LeastUsed then put the one with more left first, only among seats
+	// whose LeftIn is the same (byLeft): points are never weighed against
+	// another provider's, or another unit.
+	Left   float64
+	LeftIn string
 }
 
 // Strategy orders a pool.

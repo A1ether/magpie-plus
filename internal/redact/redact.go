@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/publicsuffix"
@@ -42,7 +43,12 @@ type Options struct {
 	// WordsAnyCase matches Words in any case: Nightjar masks NIGHTJAR and
 	// nightjar too. Off, a word is matched as written.
 	WordsAnyCase bool
-	Rules        []Rule // the user's own rules, masked with the secrets
+	// WordsWhole matches Words only as whole words (acmilan_ on Discord):
+	// ABC masks "ABC IS" and 'ABC' but not XABCD, and 123456 masks no part
+	// of 91234567, 0.123456 or 123456.78 (wholeWord). Off, a word is found
+	// anywhere, inside a longer one too.
+	WordsWhole bool
+	Rules      []Rule // the user's own rules, masked with the secrets
 	// Kinds turns each of the Categories of personal data on or off by its
 	// id, where the user chose; one not in it is as its Category.On says.
 	// None of them is masked while Personal is off.
@@ -135,7 +141,7 @@ const (
 
 var rules = append([]rule{
 	{kind: "PRIVATE_KEY", re: regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----[\s\S]+?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----`), markers: []string{"PRIVATE KEY"}},
-	{kind: "API_KEY", re: regexp.MustCompile(`sk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`), markers: []string{"sk-"}, bound: tokenCh},
+	{kind: "API_KEY", re: regexp.MustCompile(`sk-(?:ant-|proj-|or-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}`), markers: []string{"sk-"}, bound: tokenCh, ok: notASlug},
 	// a gateway's or a relay's own: oc_sk_…, or_sk_… (#195)
 	{kind: "API_KEY", re: regexp.MustCompile(`[a-z]{2,4}_sk_[A-Za-z0-9_-]{20,}`), markers: []string{"_sk_"}, bound: tokenCh, ok: secretValue},
 	{kind: "API_KEY", re: regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|glpat-[A-Za-z0-9_-]{20,})`), markers: []string{"gh", "github_pat_", "glpat-"}, bound: tokenCh},
@@ -175,7 +181,7 @@ var rules = append([]rule{
 		`[ \t]*(?:[为為是][ \t]*[:：]?|：)[ \t]*(?:\\?["'“「])?(` + secretCh + `{3,}[A-Za-z0-9_\-/+=~!@#%^&*])`),
 		fold: cjkCopulas, back: 24, ahead: 260, at: keyAt},
 
-	{kind: "EMAIL", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), markers: []string{"@"}, bound: alnum + "._%+-", ok: realEmail, at: notUserinfo, cat: catPersonal},
+	{kind: "EMAIL", re: regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}`), markers: []string{"@"}, bound: alnum + "_%+-", ok: realEmail, at: emailAt, cat: catPersonal},
 	{kind: "ID_CARD", re: regexp.MustCompile(`[1-9]\d{5}(?:18|19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx]`), bound: alnum, ok: chineseID, cat: catPersonal},
 	{kind: "PHONE", re: regexp.MustCompile(`(?:\+?86[- ]?)?1[3-9]\d{9}`), bound: digits, cat: catPersonal},
 	{kind: "BANK_CARD", re: regexp.MustCompile(`[3-6]\d{3}(?:[ -]?\d{4}){2,3}(?:[ -]?\d{1,3})?`), bound: digits, ok: luhn, cat: catPersonal},
@@ -350,6 +356,23 @@ func notUserinfo(s string, a, _ int) bool {
 	return !inUserinfo(s, a)
 }
 
+// emailAt is where an email at s[a:b] can be: not in a URL's userinfo
+// (notUserinfo), and with no dot touching it that makes it part of a
+// longer name: none before it, and none after it that a letter, digit,
+// - or _ follows (a@b.io.12 is no address). A dot after it that ends a
+// sentence is the sentence's: "The user's email address is
+// jo@quill.dev." masked nothing while the dot was a bound character, and
+// the address went to the vendor as written.
+func emailAt(s string, a, b int) bool {
+	if a > 0 && s[a-1] == '.' {
+		return false
+	}
+	if b+1 < len(s) && s[b] == '.' && strings.IndexByte(tokenCh, s[b+1]) >= 0 {
+		return false
+	}
+	return notUserinfo(s, a, b)
+}
+
 // inUserinfo says s[a] is inside a URL's authority, after its scheme://
 // and before the host: nothing from there back to the // is a /, ?, #,
 // space, quote, < or > or @.
@@ -376,6 +399,30 @@ func inUserinfo(s string, a int) bool {
 // the user every git host is reached by over SSH (git@github.com:o/r.git,
 // git@gitee.com, a company's own git@git.corp.com), no one's mailbox, and
 // was masked so a remote no longer read as one (jumy on Discord).
+// notASlug is false for words in lower case joined by hyphens, as a
+// page's address names an article about SK hynix
+// (cnbc.com/…/sk-hynix-third-quarter-profit.html), which went to the model
+// as a key. A key's characters are random: it has a capital, or a run of
+// 16 or more with no hyphen (DeepSeek's sk- and 32 hex digits, OpenRouter's
+// sk-or-v1- and 64), or hex digits alone, as a UUID's groups (sk- and a
+// UUID in lower case) are, which no word but a few like "face" is.
+func notASlug(v string) bool {
+	if strings.ContainsFunc(v, func(r rune) bool { return r >= 'A' && r <= 'Z' }) {
+		return true
+	}
+	if !strings.ContainsFunc(strings.TrimPrefix(v, "sk-"), func(r rune) bool {
+		return r != '-' && r != '_' && (r < '0' || r > '9') && (r < 'a' || r > 'f')
+	}) {
+		return true
+	}
+	for _, w := range strings.FieldsFunc(v, func(r rune) bool { return r == '-' || r == '_' }) {
+		if len(w) >= 16 {
+			return true
+		}
+	}
+	return false
+}
+
 func realEmail(v string) bool {
 	at := strings.LastIndexByte(v, '@')
 	if strings.EqualFold(v[:at], "git") {
@@ -678,6 +725,53 @@ func anyCase(w string) *regexp.Regexp {
 	return re
 }
 
+// wordRune says r is a letter, a digit or _ of a script that puts spaces
+// between words. Chinese and Japanese don't, so a word of theirs is found
+// inside their text, and a Latin word right beside a Chinese letter
+// ("用ABC做") is still whole.
+func wordRune(r rune) bool {
+	if r == '_' {
+		return true
+	}
+	if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+		return false
+	}
+	return !unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana)
+}
+
+// wholeWord says s[a:b], a word the user asked to mask, is a word of its
+// own in s: where its first or last letter is a wordRune, the letter
+// beside it in s isn't one. A number is one with its decimals, so a digit
+// at its edge also has no "." and digit beside it: 123456 is not whole in
+// 0.123456 or 123456.78, while "v1." ends a sentence.
+func wholeWord(s string, a, b int) bool {
+	first, _ := utf8.DecodeRuneInString(s[a:b])
+	last, _ := utf8.DecodeLastRuneInString(s[a:b])
+	if wordRune(first) && a > 0 {
+		r, n := utf8.DecodeLastRuneInString(s[:a])
+		if wordRune(r) {
+			return false
+		}
+		if unicode.IsDigit(first) && r == '.' {
+			if p, _ := utf8.DecodeLastRuneInString(s[:a-n]); unicode.IsDigit(p) {
+				return false
+			}
+		}
+	}
+	if wordRune(last) && b < len(s) {
+		r, n := utf8.DecodeRuneInString(s[b:])
+		if wordRune(r) {
+			return false
+		}
+		if unicode.IsDigit(last) && r == '.' {
+			if f, _ := utf8.DecodeRuneInString(s[b+n:]); unicode.IsDigit(f) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // Mask swaps what o covers in s for placeholders, and says how many.
 func Mask(s string, o Options) (string, int) {
 	o.sent = true
@@ -730,19 +824,38 @@ func mask(raw string, o Options, put func(kind, v string) string, escaped bool) 
 		if w = strings.TrimSpace(w); len(w) < 2 {
 			continue
 		}
-		if o.WordsAnyCase {
-			for _, m := range anyCase(w).FindAllStringIndex(s, -1) {
-				found = append(found, span{m[0], m[1], "TERM", ByWord})
-			}
+		// a date is matched as that date, however it is written (dateword.go)
+		if spans, ok := dateSpans(s, w); ok {
+			found = append(found, spans...)
 			continue
 		}
-		for i := 0; ; {
-			j := strings.Index(s[i:], w)
-			if j < 0 {
+		// next finds w at or after i; one inside a longer word, where the
+		// user asked for whole words, is passed over a letter at a time, so
+		// "XABC ABC" still finds the second
+		next := func(i int) (int, int) {
+			if o.WordsAnyCase {
+				if m := anyCase(w).FindStringIndex(s[i:]); m != nil {
+					return i + m[0], i + m[1]
+				}
+				return -1, -1
+			}
+			if j := strings.Index(s[i:], w); j >= 0 {
+				return i + j, i + j + len(w)
+			}
+			return -1, -1
+		}
+		for i := 0; i <= len(s); {
+			a, b := next(i)
+			if a < 0 {
 				break
 			}
-			found = append(found, span{i + j, i + j + len(w), "TERM", ByWord})
-			i += j + len(w)
+			if o.WordsWhole && !wholeWord(s, a, b) {
+				_, n := utf8.DecodeRuneInString(s[a:])
+				i = a + max(n, 1)
+				continue
+			}
+			found = append(found, span{a, b, "TERM", ByWord})
+			i = max(b, a+1)
 		}
 	}
 	all := rules
