@@ -13,16 +13,21 @@
 ~/DevSpace/magpie+powermeter/   # git 仓库根 = magpie fork 基底（Go），承载二开
 ├── .git/                       # 仓库就在这里，不再有二级目录
 ├── internal/ …                 # magpie 源码与构建（Makefile、go.mod、main.go 等同级）
+├── third_party/power-meter/    # power-meter 源码（git subtree，见 §15）
 ├── docs/                       # magpie 上游文档 + fork 的方案/验收文档
 ├── FORK.md                     # 本文件
-└── (power-meter 源码在 ~/DevSpace/power-meter，独立仓库，sidecar 形态复用)
+└── vendor/upstream/*           # 上游 magpie 的全部分支与 tag 归档引用（见 §14）
 ```
 
-> 说明：power-meter 是已有独立仓库（`git@github.com:A1ether/power-meter`），按方案 A 以 **sidecar 进程** 复用，
-> 不做 git submodule 内嵌——它持续演进，保持独立演进能力。
+> 说明：power-meter 仍是独立仓库（`git@github.com:A1ether/power-meter`），按方案 A 以 **sidecar 进程** 复用。
 >
 > **2026-10-27 结构变更**：原 `magpie-upstream/` 二级目录的内容（含 `.git`）已整体上移到工作区根，
 > `~/DevSpace/magpie+powermeter` 本身就是 git 仓库；本文件与 `docs/` 下的 fork 文档随之进入仓库工作区。
+>
+> **2026-10-28 结构变更**：power-meter 源码以 **git subtree** 进了本仓库的 `third_party/power-meter/`
+> （不再依赖 `~/DevSpace/power-meter` 这份外部 checkout），
+> 于是「两个仓库的源码都在本仓库」成立：magpie 一条（本仓库自身 + §14 的上游归档引用），power-meter 一条（subtree）。
+> 更新与新功能的完整流程见 [docs/更新与发布流程.md](docs/更新与发布流程.md)。
 
 ## 2. 远程与分支策略
 
@@ -32,7 +37,7 @@
 |---|---|---|
 | `origin` | `https://github.com/A1ether/magpie-plus.git` | **本项目的独立发布仓库**（私有），fork 的推送目标与主分支所在 |
 | `upstream` | `https://github.com/yetone/magpie.git` | 官方库，只读追新（上游不接受外部 PR） |
-| `power-meter` | `https://github.com/A1ether/power-meter.git` | power-meter 源码参照（同一作者的另一个仓库） |
+| `power-meter` | `https://github.com/A1ether/power-meter.git` | power-meter 的上游（同一作者的另一个仓库），`git subtree pull` 的来源 |
 
 > **项目形态**：magpie plus 是 A1ether 名下的独立项目，不是「等待被上游合并的 fork」。
 > 上游 MIT 许可允许独立分发；`upstream` 只作为只读的更新来源。
@@ -45,20 +50,16 @@
 - `main`：**fork 的主线**，= 上游基底 + 全部二开，默认分支。发布从这个分支构建。
 - `feature/balance-board`：二开集成分支，内容与 `main` 相等；保留作为上游更新落地时的试验分支。
 
-跟随上游更新：
+跟随两个上游更新（一条命令，冲突逐个停下等人工解）：
 
 ```bash
-git fetch upstream
-git checkout main
-git merge upstream/main      # 二开代码集中在新增目录，冲突面只有 index.html 与三个 GUI 测试
+make update        # = git subtree pull third_party/power-meter + git merge upstream/main
+make preview       # 构建两边的源码 + 装 sidecar，然后在浏览器里看
+make app           # 看过且确认之后，才构建桌面 app
 ```
 
-跟随 power-meter 更新（sidecar 形态，无代码耦合）：
-
-```bash
-cd ~/DevSpace/power-meter && npm run build
-cd ~/DevSpace/magpie+powermeter && make balance-board POWER_METER=~/DevSpace/power-meter
-```
+要单独做某一步，或想看清细节（远程、冲突面、预览端口、为什么先网页后桌面）：
+[docs/更新与发布流程.md](docs/更新与发布流程.md)。
 
 ## 2.1 应用标识（fork 与官版的区分）
 
@@ -617,3 +618,48 @@ git archive --format=tar vendor/upstream/v0.1.1670 | tar -x -C /tmp/magpie-0.1.1
 - ✅ `origin` 上这些引用不触发任何工作流：分支不匹配 `main` / `pf/**`，
   tag 不匹配 `v*` / `pf-v*`。
 
+
+---
+
+## 15. power-meter 源码入库（git subtree，2026-10-28）
+
+> 要求：power-meter 的源码也要在本仓库，构建不依赖外部 checkout。
+> §14 解决的是 magpie 上游（归档引用），这一节解决另一边。
+
+### 15.1 形态
+
+`third_party/power-meter/` 是 power-meter 仓库的 **git subtree**（`--squash`）：
+工作树里是它的 95 个受版本管理的文件（`src/`、`public/`、`tools/`、`docs/`、
+`package.json`、`package-lock.json`、`tsconfig.json`），
+`node_modules/`、`dist/`、`.env`、`accounts.json` 由它的 `.gitignore` 排除，不入库。
+
+选 subtree 而不是 submodule：submodule 在克隆后是空目录，还要 `--recursive` 且
+两处版本分开记；subtree 克隆即得源码，`make power-meter-build` 就地编译。
+
+### 15.2 更新
+
+```bash
+make update-power-meter    # git subtree pull --prefix third_party/power-meter power-meter main --squash
+```
+
+### 15.3 改 power-meter 代码
+
+首选在 `~/DevSpace/power-meter` 仓库里改、提交、推送，再 `make update-power-meter` 拉进来。
+直接在 `third_party/power-meter/` 里改也能跑，但下次 pull 前要用
+
+```bash
+git subtree push --prefix third_party/power-meter power-meter main
+```
+
+送回上游仓库，否则两边会分叉。
+
+### 15.4 构建落点
+
+`make power-meter-build` → `third_party/power-meter/dist/server.js`；
+`make balance-board` → `~/.config/magpie/powermeter/`（sidecar 的落点）。
+`POWER_METER=<checkout>` 仍可指向外部仓库。
+
+### 15.5 完整流程
+
+[docs/更新与发布流程.md](docs/更新与发布流程.md)：取两个上游 → 构建 →
+网页端预览确认 → 才构建桌面 App。

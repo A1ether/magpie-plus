@@ -32,7 +32,7 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board upstream-archive upstream-archive-check
+.PHONY: build cli install test test-ui app icons release release-cli release-windows release-linux clean dev dev-once balance-board power-meter-build preview update update-upstream update-power-meter upstream-archive upstream-archive-check
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
@@ -52,11 +52,20 @@ test:
 # goes, because server.js imports its siblings by relative path. It is not
 # bundled into magpie: power-meter is its own project, and a sidecar is one
 # 'make balance-board' away (or MAGPIE_POWERMETER_SERVER_JS pointing at your
-# own build). Needs the power-meter checkout, whose 'npm run build' writes
-# dist/. A portable magpie keeps its files beside the app instead: set
-# POWER_METER_DEST to that data folder.
-POWER_METER ?= $(HOME)/DevSpace/power-meter
+# own build). Its source is kept in this repository at third_party/power-meter
+# (a git subtree: `make update-power-meter` follows it), and 'npm run build'
+# writes dist/ there. A checkout elsewhere still works: set
+# POWER_METER=<checkout>. A portable magpie keeps its files beside the app
+# instead: set POWER_METER_DEST to that data folder.
+POWER_METER ?= third_party/power-meter
 POWER_METER_DEST ?= $(or $(XDG_CONFIG_HOME),$(HOME)/.config)/magpie/powermeter
+
+# node_modules is not kept in this repository, so the first build installs it
+# from package-lock.json. tsc writes dist/server.js.
+power-meter-build:
+	@test -f $(POWER_METER)/package.json || { echo "no power-meter at $(POWER_METER): set POWER_METER=<checkout>" >&2; exit 1; }
+	@cd $(POWER_METER) && { test -d node_modules || npm ci; } && npm run build
+	@test -f $(POWER_METER)/dist/server.js || { echo "$(POWER_METER)/dist/server.js is missing after the build" >&2; exit 1; }
 
 balance-board:
 	@test -d $(POWER_METER) || { echo "power-meter not at $(POWER_METER): set POWER_METER=<checkout>" >&2; exit 1; }
@@ -65,6 +74,38 @@ balance-board:
 	@rsync -a --delete-excluded --exclude '*.map' --exclude 'power-meter-sidecar' $(POWER_METER)/dist/ $(POWER_METER_DEST)/
 	@rsync -a $(POWER_METER)/public/ $(POWER_METER_DEST)/public/
 	@echo "  balance board · sidecar installed in $(POWER_METER_DEST) · turn it on in the Balance board page"
+
+# What to look at first, in a browser: both sources built, the sidecar
+# installed, then 'magpie web' and its link (Ctrl-C stops it). Both ports are
+# the preview's own. A running magpie holds 127.0.0.1:3425 and serves the
+# gateway there; MAGPIE_ADDR moves this run's gateway to 3437, so the page is
+# the build being looked at and not the other one's, and the older magpie
+# keeps the agents' traffic. The desktop app is built only once this page is
+# as it should be: make app.
+PREVIEW_ADDR ?= 127.0.0.1:3436
+PREVIEW_GATEWAY ?= 127.0.0.1:3437
+
+preview: power-meter-build balance-board build
+	@MAGPIE_ADDR=$(PREVIEW_GATEWAY) ./magpie web --addr $(PREVIEW_ADDR)
+
+# Following the two upstreams. Both sources are in this repository: magpie's
+# tree is the fork of yetone/magpie (whose branches and tags are archived
+# under vendor/upstream/, see above), and power-meter's is the subtree at
+# third_party/power-meter. Each stops on a conflict and leaves it to be
+# resolved by hand. Then: make preview.
+update:
+	@git diff --quiet && git diff --cached --quiet || { echo "the working tree has changes: commit or stash them first" >&2; exit 1; }
+	@$(MAKE) --no-print-directory update-power-meter
+	@$(MAKE) --no-print-directory update-upstream
+	@echo "  updated · next: make preview"
+
+update-upstream:
+	git fetch upstream
+	git merge --no-edit upstream/main
+
+update-power-meter:
+	git fetch power-meter
+	git subtree pull --prefix third_party/power-meter power-meter main --squash
 
 # Keeps a copy of yetone/magpie's branches and tags in this repository, under
 # vendor/upstream/, so the project survives upstream deleting its repository.
