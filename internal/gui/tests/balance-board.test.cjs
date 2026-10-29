@@ -18,18 +18,21 @@ const assets = path.resolve(__dirname, "../assets");
 
 // what power-meter's /api/summary answers with for a sidecar that is up,
 // in the shape the sidecar really sends (src/types.ts): a lot carries its
-// lotLabel and displayName, the granted total beside what is left, the
-// expiry as a moment, and its yuan value as cny; a card carries its own lots
-// and the day's four figures.
+// lotLabel and displayName, the expiry as a moment, and its yuan value as
+// cny; a card carries its own lots and the day's four figures.
 const summary = () => {
   const expiresAt = new Date(Date.now() + 3 * 86400000).toISOString();
+  const farAt = new Date(Date.now() + 60 * 86400000).toISOString();
   return {
     totals: { providers: 2, ok: 1, failed: 1, availableByCurrency: { USD: 42.5, CNY: 8 } },
     providers: [
       {
         provider: "qoder", displayName: "Qoder", plan: "Pro", status: "ok",
         balance: { amount: 12.5, currency: "USD" },
-        credits: [{ id: "qoder-1", label: "Qoder credits", amount: 500, currency: "credits", expiresAt, note: "", basis: "remaining", granted: 800 }],
+        credits: [
+          { id: "qoder-1", label: "Qoder credits", amount: 500, currency: "credits", expiresAt, note: "", basis: "remaining" },
+          { id: "qoder-2", label: "Qoder bonus", amount: 200, currency: "credits", expiresAt: farAt, note: "", basis: "remaining" },
+        ],
         dailyUsage: {
           todayUsed: 12, yesterdayUsed: 40, todayAdded: 5, yesterdayAdded: 0, currency: "USD",
           sources: { todayUsed: "upstream", yesterdayUsed: "upstream", todayAdded: "local", yesterdayAdded: "local" },
@@ -40,7 +43,11 @@ const summary = () => {
     expiryTimeline: [
       {
         provider: "qoder", displayName: "Qoder", lotId: "qoder-1", lotLabel: "Qoder credits",
-        amount: 500, granted: 800, currency: "credits", expiresAt, inDays: 3, cny: 8, cnyNote: "",
+        amount: 500, currency: "credits", expiresAt, inDays: 3, cny: 8, cnyNote: "",
+      },
+      {
+        provider: "qoder", displayName: "Qoder", lotId: "qoder-2", lotLabel: "Qoder bonus",
+        amount: 200, currency: "credits", expiresAt: farAt, inDays: 60, cny: null, cnyNote: null,
       },
     ],
     expiryThresholds: { criticalDays: 5, warningDays: 14 },
@@ -215,16 +222,28 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(lot, /\d{2}:\d{2}/, `the expiry is a moment, not a day: ${lot}`);
       assert.equal(await page.locator("#pmTimeline .pm-lot").first().getAttribute("class"), "pm-lot pm-lv-critical");
 
-      // the bar is what is left of what the lot was granted (500 of 800), not
-      // the amount against itself
+      // the bar and the figure under it are the same number: the share of the
+      // 30 days still to wait, so the nearest lot is the shortest bar. This
+      // lot expires in 3 days of 30, whatever it has left of what it was
+      // granted.
       assert.equal(
         await page.locator("#pmTimeline .pm-lot-bar-fill").first().evaluate((n) => n.style.getPropertyValue("--w")),
-        "62.5%",
-        "the lot's bar is its remaining share of the granted total",
+        "10.0%",
+        "the lot's bar is the time left until it expires",
       );
-      // and its caption says both figures in words
+      // and its caption says that same share in words
       const cap = await page.locator("#pmTimeline .pm-lot-caption").first().textContent();
-      assert.ok(cap.includes(await word(page, "Remaining {left} of {granted}", { left: "500", granted: "800" })), `the caption says what is left of what: ${cap}`);
+      assert.ok(cap.includes(await word(page, "Time left {pct}% of {n} days", { pct: "10", n: "30" })), `the caption says how long is left: ${cap}`);
+
+      // a lot further out than the 30 days fills the bar, and says it is past
+      // the horizon rather than reading as exactly 30 days
+      assert.equal(
+        await page.locator("#pmTimeline .pm-lot-bar-fill").nth(1).evaluate((n) => n.style.getPropertyValue("--w")),
+        "100.0%",
+        "a lot past the horizon fills its bar",
+      );
+      const far = await page.locator("#pmTimeline .pm-lot-caption").nth(1).textContent();
+      assert.ok(far.includes(await word(page, "Time left: more than {n} days", { n: "30" })), `the far lot says it is past the horizon: ${far}`);
 
       // a card carries the day's four figures, each named
       const usage = await page.evaluate(() =>

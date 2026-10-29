@@ -33,7 +33,7 @@ magpie.plugin("powermeter", (ctx) => {
     <section class="pm-totals" id="pmTotals"></section>
 
     <div class="row-head"><button class="fold" type="button" data-fold="timeline" aria-expanded="true" aria-controls="pmTimeline"><span class="label" data-t>Expiry timeline</span></button>
-      <span class="row-sub" data-t>Every credit lot, by expiry, and how much of it is left</span></div>
+      <span class="row-sub" data-t>Every credit lot, by expiry, and how long each has left</span></div>
     <section class="pm-timeline" id="pmTimeline"></section>
 
     <div class="row-head"><button class="fold" type="button" data-fold="cards" aria-expanded="true" aria-controls="pmCards"><span class="label" data-t>Balance cards</span></button>

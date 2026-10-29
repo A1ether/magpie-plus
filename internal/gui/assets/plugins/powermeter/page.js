@@ -52,49 +52,46 @@ function pmDays(iso) {
   return Math.ceil((d - Date.now()) / 86400000);
 }
 
-// PM_TIME_FULL_DAYS is the horizon a time bar fills against: a lot expiring
-// within it shows how much of the wait is left, one further out reads full.
-// It is only used when the sidecar doesn't know the lot's granted total.
+// PM_TIME_FULL_DAYS is the horizon a lot's time bar fills against: a lot
+// expiring within it shows how much of the wait is left, one further out
+// reads full.
 const PM_TIME_FULL_DAYS = 30;
 
-// pmLotBar is one lot's progress. When the sidecar knows the lot's granted
-// total the bar is what is still there (amount / granted); otherwise it is
-// the share of PM_TIME_FULL_DAYS still to wait. It is never the amount
-// against itself, which would read full until the moment it vanished.
+// pmLotTimePct is what share of PM_TIME_FULL_DAYS is still to wait, 0 to
+// 100. The bar and the figure under it are this one number, so a lot that
+// runs out sooner reads lower in both: the nearest expiry is the shortest
+// bar.
+function pmLotTimePct(hit, now) {
+  const pct = ((Date.parse(hit.expiresAt) - now) / (PM_TIME_FULL_DAYS * 86400000)) * 100;
+  if (!isFinite(pct)) return 0;
+  return Math.max(0, Math.min(100, pct));
+}
+
+// pmLotBar is one lot's progress: the time left until it expires.
 function pmLotBar(hit, now) {
   const bar = el("div", "pm-lot-bar");
   const fill = el("span", "pm-lot-bar-fill");
-  let pct, why;
-  if (hit.granted > 0) {
-    pct = (hit.amount / hit.granted) * 100;
-    why = t("The bar is how much of the lot is left: {left} of {granted}",
-      { left: pmNum(hit.amount), granted: pmNum(hit.granted) });
-  } else {
-    pct = ((Date.parse(hit.expiresAt) - now) / (PM_TIME_FULL_DAYS * 86400000)) * 100;
-    why = t("The bar is the time left until it expires; {n} days is full", { n: PM_TIME_FULL_DAYS });
-  }
-  pct = Math.max(0, Math.min(100, pct));
-  if (!isFinite(pct)) pct = 0;
-  bar.title = why;
-  fill.style.setProperty("--w", pct.toFixed(1) + "%");
+  bar.title = t("The bar is the time left until it expires; {n} days is full", { n: PM_TIME_FULL_DAYS });
+  fill.style.setProperty("--w", pmLotTimePct(hit, now).toFixed(1) + "%");
   bar.append(fill);
   return bar;
 }
 
-// pmLotCaption says the figures behind a lot's bar in words: how much of
-// this lot is left of what it was granted, what share of the provider's own
-// left it is, and, for a lot whose platform tells only what it was granted,
-// that the amount on the right is that total rather than what is left.
-function pmLotCaption(hit, providerLeft, basis) {
+// pmLotCaption says the figures behind a lot's bar in words: the same time
+// percentage the bar draws, and, for a lot whose platform tells only what it
+// was granted, that the amount on the right is that total rather than what is
+// left. A lot further out than the horizon fills the bar and says so, rather
+// than reading 100% as exactly the horizon.
+function pmLotCaption(hit, now, basis) {
   const bits = [];
-  if (hit.granted > 0) {
-    bits.push(t("Remaining {left} of {granted}", { left: pmNum(hit.amount), granted: pmNum(hit.granted) }));
-  } else if (basis === "granted") {
+  if (basis === "granted") {
     bits.push(t("Granted {n}; how much is left isn't told", { n: pmNum(hit.amount) }));
   }
-  if (providerLeft > 0 && hit.amount <= providerLeft) {
-    bits.push(t("{pct}% of the provider's left", { pct: Math.round((hit.amount / providerLeft) * 100) }));
-  }
+  const days = (Date.parse(hit.expiresAt) - now) / 86400000;
+  bits.push(days > PM_TIME_FULL_DAYS
+    ? t("Time left: more than {n} days", { n: PM_TIME_FULL_DAYS })
+    : t("Time left {pct}% of {n} days",
+      { pct: Math.round(pmLotTimePct(hit, now)), n: PM_TIME_FULL_DAYS }));
   return bits.join(" · ");
 }
 
@@ -186,9 +183,9 @@ function pmUsage(p) {
 }
 
 // pmLot builds one credit lot's row on the timeline: what it is, when it
-// runs out (to the minute), how long that is from now, and how much of it is
-// left.
-function pmLot(hit, th, now, providerLeft, basis) {
+// runs out (to the minute), how long that is from now, and how much of the
+// wait is left.
+function pmLot(hit, th, now, basis) {
   const days = hit.inDays !== undefined ? Math.ceil(hit.inDays) : pmDays(hit.expiresAt);
   const level = pmLevel(days, th);
   const row = el("div", "pm-lot pm-lv-" + level);
@@ -202,7 +199,7 @@ function pmLot(hit, th, now, providerLeft, basis) {
   if (left) meta.push(left);
   body.append(el("span", "pm-lot-meta", meta.join(" · ")));
   body.append(pmLotBar(hit, now));
-  const cap = pmLotCaption(hit, providerLeft, basis);
+  const cap = pmLotCaption(hit, now, basis);
   if (cap) body.append(el("span", "pm-lot-caption", cap));
   row.append(body);
   // the figures travel together: on a narrow window they take a line of
@@ -229,28 +226,12 @@ function pmBasisByLot(providers) {
   return basis;
 }
 
-// pmLeftByProvider is each provider's remaining amount per currency, the
-// sum of its lots that are not just "granted" figures (those don't add up).
-// A lot's share of it says whether this one is the bulk of what is left.
-function pmLeftByProvider(providers) {
-  const left = new Map();
-  for (const p of providers) {
-    for (const lot of p.credits || []) {
-      if (lot.basis === "granted") continue;
-      const key = (p.provider || "") + "|" + (lot.currency || "");
-      left.set(key, (left.get(key) || 0) + (lot.amount || 0));
-    }
-  }
-  return left;
-}
-
 // pmRender draws the whole payload: totals, the timeline, then the cards.
 function pmRender(data) {
   pmLastSummary = data;
   const th = data.expiryThresholds || { criticalDays: 5, warningDays: 14 };
   const now = Date.now();
   const providers = (data.providers || []).slice();
-  const leftBy = pmLeftByProvider(providers);
   const basisBy = pmBasisByLot(providers);
 
   // totals
@@ -282,8 +263,7 @@ function pmRender(data) {
     tl.replaceChildren(el("p", "pm-empty", t("Nothing is expiring")));
   } else {
     tl.replaceChildren(...timeline.map((h) =>
-      pmLot(h, th, now, leftBy.get((h.provider || "") + "|" + (h.currency || "")) || 0,
-        basisBy.get((h.provider || "") + "|" + h.lotId))));
+      pmLot(h, th, now, basisBy.get((h.provider || "") + "|" + h.lotId))));
   }
 
   // then the cards, lowest balance first
