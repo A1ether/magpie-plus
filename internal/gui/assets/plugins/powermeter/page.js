@@ -52,27 +52,35 @@ function pmDays(iso) {
   return Math.ceil((d - Date.now()) / 86400000);
 }
 
-// PM_TIME_FULL_DAYS is the horizon a lot's time bar fills against: a lot
-// expiring within it shows how much of the wait is left, one further out
-// reads full.
-const PM_TIME_FULL_DAYS = 30;
-
-// pmLotTimePct is what share of PM_TIME_FULL_DAYS is still to wait, 0 to
-// 100. The bar and the figure under it are this one number, so a lot that
-// runs out sooner reads lower in both: the nearest expiry is the shortest
-// bar.
-function pmLotTimePct(hit, now) {
-  const pct = ((Date.parse(hit.expiresAt) - now) / (PM_TIME_FULL_DAYS * 86400000)) * 100;
-  if (!isFinite(pct)) return 0;
-  return Math.max(0, Math.min(100, pct));
+// pmTimelineEnd is when the furthest lot on the page runs out: the scale the
+// bars are drawn on runs from now to it, so the figure is a calculation on
+// the real expiry times rather than on an invented window.
+function pmTimelineEnd(timeline, now) {
+  let end = now;
+  for (const hit of timeline) {
+    const ts = Date.parse(hit.expiresAt);
+    if (isFinite(ts) && ts > end) end = ts;
+  }
+  return end;
 }
 
-// pmLotBar is one lot's progress: the time left until it expires.
-function pmLotBar(hit, now) {
+// pmLotTimePct is where a lot's expiry sits between now (0) and the furthest
+// expiry on the page (100). The bar and the figure under it are this one
+// number, so the lot that runs out soonest reads lowest in both.
+function pmLotTimePct(hit, now, end) {
+  const ts = Date.parse(hit.expiresAt);
+  if (!isFinite(ts) || end <= now) return 0;
+  return Math.max(0, Math.min(100, ((ts - now) / (end - now)) * 100));
+}
+
+// pmLotBar is one lot's progress: the time left until it expires, against
+// the furthest expiry the list shows.
+function pmLotBar(hit, now, end) {
   const bar = el("div", "pm-lot-bar");
   const fill = el("span", "pm-lot-bar-fill");
-  bar.title = t("The bar is the time left until it expires; {n} days is full", { n: PM_TIME_FULL_DAYS });
-  fill.style.setProperty("--w", pmLotTimePct(hit, now).toFixed(1) + "%");
+  bar.title = t("The bar is the time left until it expires; the last lot on the list, {n} days away, is full",
+    { n: pmNum(Math.round((end - now) / 86400000)) });
+  fill.style.setProperty("--w", pmLotTimePct(hit, now, end).toFixed(1) + "%");
   bar.append(fill);
   return bar;
 }
@@ -80,18 +88,13 @@ function pmLotBar(hit, now) {
 // pmLotCaption says the figures behind a lot's bar in words: the same time
 // percentage the bar draws, and, for a lot whose platform tells only what it
 // was granted, that the amount on the right is that total rather than what is
-// left. A lot further out than the horizon fills the bar and says so, rather
-// than reading 100% as exactly the horizon.
-function pmLotCaption(hit, now, basis) {
+// left.
+function pmLotCaption(hit, now, end, basis) {
   const bits = [];
   if (basis === "granted") {
     bits.push(t("Granted {n}; how much is left isn't told", { n: pmNum(hit.amount) }));
   }
-  const days = (Date.parse(hit.expiresAt) - now) / 86400000;
-  bits.push(days > PM_TIME_FULL_DAYS
-    ? t("Time left: more than {n} days", { n: PM_TIME_FULL_DAYS })
-    : t("Time left {pct}% of {n} days",
-      { pct: Math.round(pmLotTimePct(hit, now)), n: PM_TIME_FULL_DAYS }));
+  bits.push(t("Time left {pct}%", { pct: Math.round(pmLotTimePct(hit, now, end)) }));
   return bits.join(" · ");
 }
 
@@ -183,9 +186,9 @@ function pmUsage(p) {
 }
 
 // pmLot builds one credit lot's row on the timeline: what it is, when it
-// runs out (to the minute), how long that is from now, and how much of the
-// wait is left.
-function pmLot(hit, th, now, basis) {
+// runs out (to the minute), how long that is from now, and where that sits
+// between now and the furthest expiry on the page.
+function pmLot(hit, th, now, end, basis) {
   const days = hit.inDays !== undefined ? Math.ceil(hit.inDays) : pmDays(hit.expiresAt);
   const level = pmLevel(days, th);
   const row = el("div", "pm-lot pm-lv-" + level);
@@ -198,8 +201,8 @@ function pmLot(hit, th, now, basis) {
   const left = pmLeft(hit.expiresAt, now);
   if (left) meta.push(left);
   body.append(el("span", "pm-lot-meta", meta.join(" · ")));
-  body.append(pmLotBar(hit, now));
-  const cap = pmLotCaption(hit, now, basis);
+  body.append(pmLotBar(hit, now, end));
+  const cap = pmLotCaption(hit, now, end, basis);
   if (cap) body.append(el("span", "pm-lot-caption", cap));
   row.append(body);
   // the figures travel together: on a narrow window they take a line of
@@ -253,6 +256,7 @@ function pmRender(data) {
     : "–";
   totals.append(cell("Balances", balTxt, "wide"));
   const timeline = data.expiryTimeline || [];
+  const end = pmTimelineEnd(timeline, now);
   totals.append(cell("Expiring soon", String(timeline.length), timeline.length ? "warn" : ""));
   document.getElementById("pmTotals").replaceChildren(totals);
 
@@ -263,7 +267,7 @@ function pmRender(data) {
     tl.replaceChildren(el("p", "pm-empty", t("Nothing is expiring")));
   } else {
     tl.replaceChildren(...timeline.map((h) =>
-      pmLot(h, th, now, basisBy.get((h.provider || "") + "|" + h.lotId))));
+      pmLot(h, th, now, end, basisBy.get((h.provider || "") + "|" + h.lotId))));
   }
 
   // then the cards, lowest balance first

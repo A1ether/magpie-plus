@@ -222,28 +222,33 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(lot, /\d{2}:\d{2}/, `the expiry is a moment, not a day: ${lot}`);
       assert.equal(await page.locator("#pmTimeline .pm-lot").first().getAttribute("class"), "pm-lot pm-lv-critical");
 
-      // the bar and the figure under it are the same number: the share of the
-      // 30 days still to wait, so the nearest lot is the shortest bar. This
-      // lot expires in 3 days of 30, whatever it has left of what it was
-      // granted.
+      // the bar and the figure under it are the same number: where the lot's
+      // expiry sits between now and the furthest expiry on the page. This lot
+      // runs out in 3 days of the 60 the last one has left, so 5%.
       assert.equal(
         await page.locator("#pmTimeline .pm-lot-bar-fill").first().evaluate((n) => n.style.getPropertyValue("--w")),
-        "10.0%",
-        "the lot's bar is the time left until it expires",
+        "5.0%",
+        "the lot's bar is the time left until it expires, against the last expiry",
       );
       // and its caption says that same share in words
       const cap = await page.locator("#pmTimeline .pm-lot-caption").first().textContent();
-      assert.ok(cap.includes(await word(page, "Time left {pct}% of {n} days", { pct: "10", n: "30" })), `the caption says how long is left: ${cap}`);
+      assert.ok(cap.includes(await word(page, "Time left {pct}%", { pct: "5" })), `the caption says how long is left: ${cap}`);
 
-      // a lot further out than the 30 days fills the bar, and says it is past
-      // the horizon rather than reading as exactly 30 days
+      // the furthest expiry on the page is what the scale ends at: that lot
+      // fills its bar, and the bar says so with the days it has left
       assert.equal(
         await page.locator("#pmTimeline .pm-lot-bar-fill").nth(1).evaluate((n) => n.style.getPropertyValue("--w")),
         "100.0%",
-        "a lot past the horizon fills its bar",
+        "the last lot on the list fills its bar",
       );
       const far = await page.locator("#pmTimeline .pm-lot-caption").nth(1).textContent();
-      assert.ok(far.includes(await word(page, "Time left: more than {n} days", { n: "30" })), `the far lot says it is past the horizon: ${far}`);
+      assert.ok(far.includes(await word(page, "Time left {pct}%", { pct: "100" })), `the far lot is the scale's end: ${far}`);
+      assert.ok(
+        (await page.locator("#pmTimeline .pm-lot-bar").nth(1).getAttribute("title")).includes(
+          await word(page, "The bar is the time left until it expires; the last lot on the list, {n} days away, is full", { n: "60" }),
+        ),
+        "the bar says what the scale ends at",
+      );
 
       // a card carries the day's four figures, each named
       const usage = await page.evaluate(() =>
