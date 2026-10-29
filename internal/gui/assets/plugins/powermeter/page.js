@@ -65,8 +65,8 @@ function pmTimelineEnd(timeline, now) {
 }
 
 // pmLotTimePct is where a lot's expiry sits between now (0) and the furthest
-// expiry on the page (100). The bar and the figure under it are this one
-// number, so the lot that runs out soonest reads lowest in both.
+// expiry on the page (100): the bar's own reading, so the lot that runs out
+// soonest is the shortest bar.
 function pmLotTimePct(hit, now, end) {
   const ts = Date.parse(hit.expiresAt);
   if (!isFinite(ts) || end <= now) return 0;
@@ -85,8 +85,8 @@ function pmLotBar(hit, now, end) {
   return bar;
 }
 
-// pmLotCaption says the figures behind a lot's bar in words: the same time
-// percentage the bar draws, and, for a lot whose platform tells only what it
+// pmLotCaption says, under a lot's bar, how long it has left in words — the
+// same wait the bar draws — and, for a lot whose platform tells only what it
 // was granted, that the amount on the right is that total rather than what is
 // left.
 function pmLotCaption(hit, now, end, basis) {
@@ -94,7 +94,8 @@ function pmLotCaption(hit, now, end, basis) {
   if (basis === "granted") {
     bits.push(t("Granted {n}; how much is left isn't told", { n: pmNum(hit.amount) }));
   }
-  bits.push(t("Time left {pct}%", { pct: Math.round(pmLotTimePct(hit, now, end)) }));
+  const left = pmLeft(hit.expiresAt, now);
+  if (left) bits.push(left);
   return bits.join(" · ");
 }
 
@@ -186,8 +187,8 @@ function pmUsage(p) {
 }
 
 // pmLot builds one credit lot's row on the timeline: what it is, when it
-// runs out (to the minute), how long that is from now, and where that sits
-// between now and the furthest expiry on the page.
+// runs out (to the minute), a bar of how long that is against the furthest
+// expiry on the page, and that wait again in words under the bar.
 function pmLot(hit, th, now, end, basis) {
   const days = hit.inDays !== undefined ? Math.ceil(hit.inDays) : pmDays(hit.expiresAt);
   const level = pmLevel(days, th);
@@ -198,8 +199,6 @@ function pmLot(hit, th, now, end, basis) {
   const meta = [];
   if (hit.displayName) meta.push(hit.displayName);
   meta.push(hit.expiresAt ? t("expires {date}", { date: pmWhen(hit.expiresAt) }) : t("never expires"));
-  const left = pmLeft(hit.expiresAt, now);
-  if (left) meta.push(left);
   body.append(el("span", "pm-lot-meta", meta.join(" · ")));
   body.append(pmLotBar(hit, now, end));
   const cap = pmLotCaption(hit, now, end, basis);

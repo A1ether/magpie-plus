@@ -222,27 +222,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.match(lot, /\d{2}:\d{2}/, `the expiry is a moment, not a day: ${lot}`);
       assert.equal(await page.locator("#pmTimeline .pm-lot").first().getAttribute("class"), "pm-lot pm-lv-critical");
 
-      // the bar and the figure under it are the same number: where the lot's
-      // expiry sits between now and the furthest expiry on the page. This lot
-      // runs out in 3 days of the 60 the last one has left, so 5%.
+      // the bar is the time left, against the furthest expiry on the page:
+      // this lot runs out in 3 days of the 60 the last one has left, so 5%.
       assert.equal(
         await page.locator("#pmTimeline .pm-lot-bar-fill").first().evaluate((n) => n.style.getPropertyValue("--w")),
         "5.0%",
         "the lot's bar is the time left until it expires, against the last expiry",
       );
-      // and its caption says that same share in words
+      // and under the bar the same wait in words, said once on the row
       const cap = await page.locator("#pmTimeline .pm-lot-caption").first().textContent();
-      assert.ok(cap.includes(await word(page, "Time left {pct}%", { pct: "5" })), `the caption says how long is left: ${cap}`);
+      assert.equal(cap, await word(page, "{n} days left", { n: 3 }), `the caption says how long is left: ${cap}`);
+      const meta = await page.locator("#pmTimeline .pm-lot-meta").first().textContent();
+      assert.ok(!meta.includes(cap), `the wait is said once, not in the meta line too: ${meta}`);
 
       // the furthest expiry on the page is what the scale ends at: that lot
-      // fills its bar, and the bar says so with the days it has left
+      // fills its bar, and the bar says with the days it has left where the
+      // scale ends
       assert.equal(
         await page.locator("#pmTimeline .pm-lot-bar-fill").nth(1).evaluate((n) => n.style.getPropertyValue("--w")),
         "100.0%",
         "the last lot on the list fills its bar",
       );
       const far = await page.locator("#pmTimeline .pm-lot-caption").nth(1).textContent();
-      assert.ok(far.includes(await word(page, "Time left {pct}%", { pct: "100" })), `the far lot is the scale's end: ${far}`);
+      assert.equal(far, await word(page, "{n} days left", { n: 60 }), `the far lot's wait is said: ${far}`);
       assert.ok(
         (await page.locator("#pmTimeline .pm-lot-bar").nth(1).getAttribute("title")).includes(
           await word(page, "The bar is the time left until it expires; the last lot on the list, {n} days away, is full", { n: "60" }),

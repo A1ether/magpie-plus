@@ -31,7 +31,6 @@ magpie.strings({
     "{n} hours {m} minutes left": "还有 {n} 小时 {m} 分",
     "{n} days left": "还有 {n} 天",
     "The bar is the time left until it expires; the last lot on the list, {n} days away, is full": "进度条是离到期还剩多少时间；最晚到期的一笔（{n} 天后）为满",
-    "Time left {pct}%": "距到期 {pct}%",
     "Granted {n}; how much is left isn't told": "授予量 {n}，剩余多少平台未告知",
 
     // the cards: today's and yesterday's use and additions
@@ -95,7 +94,6 @@ magpie.strings({
     "{n} hours {m} minutes left": "還有 {n} 小時 {m} 分",
     "{n} days left": "還有 {n} 天",
     "The bar is the time left until it expires; the last lot on the list, {n} days away, is full": "進度條是離到期還剩多少時間；最晚到期的一筆（{n} 天後）為滿",
-    "Time left {pct}%": "距到期 {pct}%",
     "Granted {n}; how much is left isn't told": "授予量 {n}，剩餘多少平台未告知",
     "Today used": "今日用量",
     "Yesterday used": "昨日用量",
@@ -155,7 +153,6 @@ magpie.strings({
     "{n} hours {m} minutes left": "あと {n} 時間 {m} 分",
     "{n} days left": "あと {n} 日",
     "The bar is the time left until it expires; the last lot on the list, {n} days away, is full": "バーは期限までの残り時間（一覧で最後に期限が来る枠、{n} 日後、が満杯）",
-    "Time left {pct}%": "期限まで {pct}%",
     "Granted {n}; how much is left isn't told": "付与量 {n}、残りは非公開",
     "Today used": "今日の使用量",
     "Yesterday used": "昨日の使用量",
@@ -215,7 +212,6 @@ magpie.strings({
     "{n} hours {m} minutes left": "noch {n} Std. {m} Min.",
     "{n} days left": "noch {n} Tage",
     "The bar is the time left until it expires; the last lot on the list, {n} days away, is full": "Der Balken ist die verbleibende Zeit bis zum Ablauf; der letzte Posten der Liste, {n} Tage entfernt, ist voll",
-    "Time left {pct}%": "Restzeit {pct}%",
     "Granted {n}; how much is left isn't told": "Gewährt {n}; wie viel übrig ist, wird nicht gesagt",
     "Today used": "Heute verbraucht",
     "Yesterday used": "Gestern verbraucht",
