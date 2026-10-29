@@ -141,6 +141,7 @@ app: build
 	@cp magpie "$(APP)/Contents/MacOS/magpie"
 	@cp build/darwin/magpie.icns "$(APP)/Contents/Resources/magpie.icns"
 	@cp build/darwin/Assets.car "$(APP)/Contents/Resources/Assets.car"
+	@cp THIRD_PARTY_NOTICES "$(APP)/Contents/Resources/THIRD_PARTY_NOTICES"
 	@sed 's/@VERSION@/$(VERSION)/' build/darwin/Info.plist > "$(APP)/Contents/Info.plist"
 	@echo "  $(APP)"
 
@@ -196,6 +197,10 @@ release-cli:
 # the icon, version and a DPI-aware manifest from build/windows. It carries
 # magpie.com, the console program a terminal runs for `magpie` and waits
 # for, which it writes beside itself (internal/update/com.go, #3737).
+# The launcher is built without the commit stamped in (-buildvcs=false):
+# magpie.com is written again whenever its bytes differ, and with the
+# commit in them every release wrote a new one though the launcher was the
+# same (TestLauncherSameAtEveryCommit).
 WINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
 release-windows:
 	@mkdir -p dist
@@ -203,7 +208,7 @@ release-windows:
 		--file-version "$(or $(WINVER),0.0.0)" --product-version "$(or $(WINVER),0.0.0)"
 	@for arch in amd64 arm64; do \
 		echo "  windows/$$arch (app)"; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -trimpath -ldflags="-s -w" -o internal/update/launcher-$$arch.com ./internal/update/launcher || exit 1; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -trimpath -buildvcs=false -ldflags="-s -w" -o internal/update/launcher-$$arch.com ./internal/update/launcher || exit 1; \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production,comlauncher -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
 	done; rm -f rsrc_windows_*.syso internal/update/launcher-*.com
 
