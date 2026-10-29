@@ -349,7 +349,6 @@ export function makeLot(input: {
   expiresAt?: string | null;
   note?: string;
   basis?: 'remaining' | 'granted';
-  granted?: number | null;
 }): CreditLot {
   return {
     id: input.id,
@@ -359,10 +358,6 @@ export function makeLot(input: {
     expiresAt: input.expiresAt ? toIso(input.expiresAt) : null,
     note: input.note ?? '',
     basis: input.basis ?? 'remaining',
-    granted:
-      input.granted === null || input.granted === undefined
-        ? null
-        : Math.max(0, Math.round(input.granted * 100) / 100),
   };
 }
 
