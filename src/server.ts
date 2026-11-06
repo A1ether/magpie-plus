@@ -15,7 +15,13 @@ import {
 import { describeRegistry, resolveAdapter } from './providers/index.js';
 import { DashboardService } from './service.js';
 
-const PUBLIC_DIR = fileURLToPath(new URL('../public/', import.meta.url));
+// sidecar 选项要在 loadConfig() 之前解析：--config-dir 会重定位 .env / accounts.json 的基准目录，
+// 而 loadConfig 一进来就 loadDotEnv。独立看板（不带参数）时它们全部保持默认，行为不变。
+const sidecar = parseSidecarOptions();
+
+// 静态资源根目录：--static-dir 优先（桌面版把 public/ 放进 App Resources，bun 编译后的
+// import.meta.url 在虚拟文件系统里读不到真实目录）；缺省仍是 <dist>/../public/。
+const PUBLIC_DIR = sidecar.staticDir ?? fileURLToPath(new URL('../public/', import.meta.url));
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -27,11 +33,22 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
 };
 
-// sidecar 选项要在 loadConfig() 之前解析：--config-dir 会重定位 .env / accounts.json 的基准目录，
-// 而 loadConfig 一进来就 loadDotEnv。独立看板（不带参数）时它们全部保持默认，行为不变。
-const sidecar = parseSidecarOptions();
 const service = new DashboardService();
 const bootstrap = loadConfig().config;
+
+/**
+ * 服务真实监听地址的 origin。
+ *
+ * 桌面版 sidecar 固定用 `--port 0` 让内核分配空闲端口，此时 `bootstrap.server.port`
+ * 永远是 0，真实端口只有 `listen` 之后才能从 `server.address()` 读到。登录回调基址
+ * 必须带真实端口——否则 Trae 授权页回跳会打开 `http://127.0.0.1:0/authorize`，
+ * 浏览器直接以 ERR_UNSAFE_PORT 拒绝（网页版端口固定，所以不受影响）。
+ */
+function serverOrigin(): string {
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : bootstrap.server.port;
+  return `http://${bootstrap.server.host}:${port}`;
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body, null, 2);
@@ -559,7 +576,7 @@ const server = createServer(async (req, res) => {
         provider: adapter.id,
         method: typeof body.method === 'string' ? body.method : undefined,
         options: stringRecord(body.options),
-        callbackBase: `http://${bootstrap.server.host}:${bootstrap.server.port}`,
+        callbackBase: serverOrigin(),
         timeoutMs: bootstrap.settings.requestTimeoutMs + 6_000,
         log: (message) => console.log(message),
       });
@@ -676,16 +693,14 @@ const server = createServer(async (req, res) => {
 server.listen(bootstrap.server.port, bootstrap.server.host, () => {
   // --port 0 时让内核分配随机空闲端口，真实端口从 address() 回读（bootstrap.server.port 仍是 0）。
   // sidecar 模式下 magpie 也从 stdout 这行解析端口，格式保持稳定：<service> listening at <url>
-  const address = server.address();
-  const actualPort =
-    address && typeof address === 'object' ? address.port : bootstrap.server.port;
-  const origin = `http://${bootstrap.server.host}:${actualPort}`;
+  const origin = serverOrigin();
 
-  if (sidecar.noStatic || sidecar.token) {
-    // sidecar 模式：一行可被 magpie 解析的就绪信号，含端口与是否启用了令牌（不打印令牌本身）
+  if (sidecar.noStatic || sidecar.token || sidecar.staticDir) {
+    // sidecar / 桌面模式：一行可被 magpie 或 macOS 外壳解析的就绪信号，含端口与是否启用了令牌（不打印令牌本身）
     console.log(
       `[power-meter] listening at ${origin} mode=sidecar` +
-        `${sidecar.noStatic ? ' no-static' : ''} token=${sidecar.token ? 'on' : 'off'}`,
+        `${sidecar.noStatic ? ' no-static' : ''}` +
+        `${sidecar.staticDir ? ' static=app' : ''} token=${sidecar.token ? 'on' : 'off'}`,
     );
   }
   console.log(`\n  Power Meter 已启动  ${origin}`);
