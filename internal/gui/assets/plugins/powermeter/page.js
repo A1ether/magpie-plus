@@ -129,7 +129,7 @@ function pmCard(p) {
       bal.lastChild.append(el("span", "pm-cur", b.currency || ""));
     }
   } else {
-    bal.append(el("div", "pm-card-none", t("No balance")));
+    bal.append(el("div", "pm-card-none", t("No balance data")));
   }
   card.append(bal);
   const usage = pmUsage(p);

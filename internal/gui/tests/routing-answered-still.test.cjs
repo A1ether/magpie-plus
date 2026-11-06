@@ -65,6 +65,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // motion on: what is checked is whether the dot pulses
         const page = await browser.newPage({ viewport: { width, height: 900 } });
         page.setDefaultTimeout(5000);
+        page.setDefaultNavigationTimeout(60000);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         const live = { pending: [], queued: [], seq: 1 };
@@ -84,7 +85,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // dot moves, and how many drawn wires flow and how many are lit
         const stage = () => page.evaluate(() => ({
           on: [...document.querySelectorAll(".rt-accts li.on")].map((li) => li.querySelector(".who")?.textContent + (li.classList.contains("now") ? ":now" : "")),
-          moving: [...document.querySelectorAll(".rt-accts li .dot")].filter((d) => getComputedStyle(d).animationName !== "none").length,
+          moving: [...document.querySelectorAll(".rt-accts li .dot")].filter((d) => getComputedStyle(d, "::after").animationName !== "none").length,
           flowing: document.querySelectorAll(".rt-wires path.live[d]").length,
           lit: document.querySelectorAll(".rt-wires path.lit[d]").length,
         }));

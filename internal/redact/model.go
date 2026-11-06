@@ -339,11 +339,20 @@ func modelFits(s string, a, b int, kind string) bool {
 	case "ADDRESS":
 		// a path is no address (-Users-x-projects-a/2b1a….jsonl); a Chinese
 		// one has no spaces, a Latin one has them
-		if isASCII(v) && !strings.ContainsAny(v, " \t\n") && strings.ContainsAny(v, `/\`) {
+		if isASCII(v) && !strings.ContainsAny(v, " \t\n") && strings.ContainsAny(v, `/\`) || programWords(v) {
 			return false
 		}
 		return strings.IndexFunc(v, unicode.IsLetter) >= 0
 	case "SECRET":
+		// a name a call is made on is no value: gctx.GetInt64 in
+		// gctx.GetInt64("user_id") went as a made-up key (#4444). Only a
+		// name the '(' touches is a call's: in prose a secret may stand
+		// before a bracket of words ("the token is k3Xq9vB2mZ (rotated)"),
+		// and the model is asked about prose too, so notCode's wider
+		// reading of the rules' values isn't taken here
+		if b < len(s) && s[b] == '(' && identPath.MatchString(v) {
+			return false
+		}
 		if !wordByte(v[0]) || patternWords(v) || regexpLike(v) || idAfter(s, a) || strings.ContainsRune(v, ' ') && clockIn.MatchString(v) || uuidIn.MatchString(v) || strings.Contains(v, `": `) || strings.Contains(v, `", "`) || linkRe.MatchString(v) {
 			return false
 		}
@@ -360,6 +369,9 @@ func modelFits(s string, a, b int, kind string) bool {
 		if pinnedAfter(s, b) {
 			return false
 		}
+		if strings.Trim(v, digits) == "" {
+			return numberNamedSecret(s, a)
+		}
 		if wordsOnly(v) && !assignedSecret(s, a) {
 			return false
 		}
@@ -371,9 +383,27 @@ func modelFits(s string, a, b int, kind string) bool {
 	return true
 }
 
+// programWords says v, which the model took for a person's or a place's,
+// is a program's words: it has an underscore (node_modules, __pycache__,
+// node_modules 太, the model running on into the sentence after it), or
+// it is Latin letters in lower case with no digit (dist, vendor,
+// site-packages, ls node_modules). No name and no address is written so:
+// a name has its capitals (personFits), an address its number or its
+// capitals (42 Wallaby Way), a Chinese one its characters. The model took
+// such a folder for personal data and the agent read a placeholder where
+// the folder was ("node_modules给识别成姓名了", kekek711 on X, 10-29).
+func programWords(v string) bool {
+	if strings.Contains(v, "_") {
+		return true
+	}
+	return isASCII(v) && strings.IndexFunc(v, unicode.IsLetter) >= 0 && strings.IndexFunc(v, func(r rune) bool { return unicode.IsUpper(r) || unicode.IsDigit(r) }) < 0
+}
+
 // wordsOnlyRe is words in lower case and nothing else, joined by - . or
-// _: drizzle-orm, reflect-metadata, lodash.merge, secretstorage.
-var wordsOnlyRe = regexp.MustCompile(`^[a-z]+(?:[-._][a-z]+)*$`)
+// _: drizzle-orm, reflect-metadata, lodash.merge, secretstorage; and a
+// folder's name as a path or Python writes it, with the slash after it
+// or underscores around it: node_modules/, __pycache__.
+var wordsOnlyRe = regexp.MustCompile(`^_*[a-z]+(?:[-._][a-z]+)*_*/?$`)
 
 // wordsOnly says v, which the model took for a secret, is made of words
 // in lower case alone, as a package's, a tool's or a setting's name is.
@@ -617,11 +647,25 @@ func underPackages(s string, a int) bool {
 // missingModuleAt says s[a:b] is quoted after the words an error names a
 // module it could not load with: tsc's and Node's Cannot find module
 // 'x', Python's No module named 'x', a bundler's Can't resolve 'x'.
+//
+// The words stand right before the quote, and what is read of what is
+// before them is the last 64 bytes of it, as assignedSecret reads the 64
+// before the value it judges (above). The whole text before the quote was
+// read and lowered here, once for each place a known value turns up at in
+// a session's body (knownSpans asks packageAt), so a long session paid its
+// whole length again for every value already masked in it — a 555 KB turn
+// held minutes in the masking and was answered 504 (#4766). The spaces
+// before the quote are trimmed first, so the window ends at the words
+// however many stand between. Lowering is rune by rune with no context,
+// so lowering the window gives the same last bytes as lowering the whole
+// text: a body written in Chinese, or one a rune cut at the window's
+// start, is read the same way and as cheaply.
 func missingModuleAt(s string, a, b int) bool {
 	if a == 0 || b >= len(s) || !strings.ContainsRune("'\"`", rune(s[a-1])) || s[b] != s[a-1] {
 		return false
 	}
-	q := strings.ToLower(strings.TrimRight(s[:a-1], " \t"))
+	t := strings.TrimRight(s[:a-1], " \t")
+	q := strings.ToLower(t[max(0, len(t)-64):])
 	for _, w := range []string{"find module", "find package", "module named", "resolve", "resolve import", "resolve module"} {
 		if wordEnd(q, w) {
 			return true
@@ -715,6 +759,11 @@ func personFits(s string, a, b int, v string) bool {
 	// an acronym (CI, API), a product's name in camel case (CodeRabbit,
 	// OpenAI) and a site's (Greptile beside app.greptile.com) are no one's
 	if w := strings.Fields(v); len(w) == 1 && (strings.Trim(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" || camelProduct(v) || hostIn(s, v)) {
+		return false
+	}
+	// an app's or a product's name the model took for a first name, where
+	// its sentence speaks of a thing (thingname.go)
+	if w := strings.Fields(v); len(w) == 1 && isASCII(v) && thingNamed(s, a, b) {
 		return false
 	}
 	for i, w := range strings.Fields(v) {
@@ -917,6 +966,45 @@ func secretCued(s string, at int) bool {
 	}
 	return false
 }
+
+// numberNamedSecret says the run of decimal digits at s[a:], which the
+// model took for a secret, is given a secret's name: the name right
+// before it, then =, :, is or a tag's > (and quotes), ends with a key's,
+// a token's, a password's or a PIN's word (api_key=, "token": , PIN:,
+// 密码是). Digits alone are a count, a time or an id everywhere else.
+// secretCued, which a hex run asks, takes a cue anywhere in the name and
+// read Claude Code's <total_tokens>14998720 tokens left</total_tokens>
+// as a token: every turn's count went as {{SECRET_…}} (steven_4422 on
+// Discord, 10-31). A name that ends past the word counts what it names
+// (total_tokens, max_tokens, token_count, keys).
+func numberNamedSecret(s string, a int) bool {
+	before := strings.ToLower(s[max(0, a-40):a])
+	for {
+		t := strings.TrimRight(before, " \t\"'`=:：>“「")
+		for _, sep := range []string{" is", " was", "是", "为", "為"} {
+			t = strings.TrimSuffix(t, sep)
+		}
+		if t == before {
+			break
+		}
+		before = t
+	}
+	if before == "" {
+		return false
+	}
+	for _, c := range numberSecretNames {
+		// a PIN's word stands alone (pin, user_pin), not the end of
+		// another's (spin, mapping)
+		if strings.HasSuffix(before, c) && (c != "pin" || len(before) == 3 || !unicode.IsLetter(rune(before[len(before)-4]))) {
+			return true
+		}
+	}
+	return false
+}
+
+// numberSecretNames are what a name that gives digits a secret's place
+// ends with.
+var numberSecretNames = []string{"key", "token", "secret", "password", "passwd", "pass", "pwd", "passcode", "pin", "密钥", "密码", "令牌", "口令"}
 
 // patternWords says v is three or more words joined by |, as a grep's or
 // a regexp's alternatives are.

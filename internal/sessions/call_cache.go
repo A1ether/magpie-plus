@@ -9,9 +9,13 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"hash/crc32"
 	"hash/fnv"
 	"io"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,12 +46,39 @@ import (
 // v15: Codex calls keep the compaction marker independently of its duration.
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
-// one is never read (pruneCalls).
+// one is never read (pruneCalls). It is raised for a change to every agent's
+// calls, or to the shards' form; a change to one agent's calls raises that
+// agent's callParseVersions instead.
 const callCacheVersion = "calls-v15"
 
-// CallCacheVersion is callCacheVersion, for a cache of what is made of the
-// calls (usage's requests-v1.bin).
-const CallCacheVersion = callCacheVersion
+// callParseVersions is each agent's calls' version, for a change to how one
+// agent's calls are read: its shards written before are read again from
+// their sessions, and every other agent's are kept. Raising callCacheVersion
+// for one agent read every agent's history again, every call shard of a
+// long history (~16,000 files, minutes of CPU) after an update. An agent
+// not named here is at 0, as every shard written before this was.
+//
+// cindy 1: a call through magpie's link (provider "magpie-<8 hex>") is
+// the gateway's, and left out (cindyGatewayProvider).
+// codex 1, zcode 1: a fork's copies of its parent's calls are the
+// parent's (codex_fork.go, zcDB.copied).
+// codex 2, zcode 2: only the copies are; a fork's own calls are its own
+// (zcode 1 left out every call of a session holding one copy).
+var callParseVersions = map[string]int{"cindy": 1, "codex": 3, "zcode": 2}
+
+// CallCacheVersion is callCacheVersion and callParseVersions, for a cache
+// of what is made of the calls (usage's requests-v1.bin and heatmap): a
+// raised agent's calls change what is made of them.
+func CallCacheVersion() string {
+	v := callCacheVersion
+	for _, agent := range slices.Sorted(maps.Keys(callParseVersions)) {
+		if n := callParseVersions[agent]; n != 0 {
+			v += fmt.Sprintf(",%s=%d", agent, n)
+		}
+	}
+	return v
+}
+
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 
@@ -102,13 +133,14 @@ func pruneCalls(files []file) {
 		callCache, callOrder, callRoot = map[string]*callFile{}, nil, root
 		callCounts = map[string]int{}
 	}
-	on := make(map[string]bool, len(files))
+	on := pathSet()
+	defer putPathSet(on)
 	for _, f := range files {
-		on[f.path] = true
+		on[f.path] = struct{}{}
 	}
 	order := callOrder[:0]
 	for _, path := range callOrder {
-		if on[path] {
+		if _, ok := on[path]; ok {
 			order = append(order, path)
 		} else {
 			delete(callCache, path)
@@ -117,14 +149,14 @@ func pruneCalls(files []file) {
 	callOrder = order
 	gone := false
 	for path := range callCounts {
-		if !on[path] {
+		if _, ok := on[path]; !ok {
 			delete(callCounts, path)
 			gone = true
 		}
 	}
 	order = callContinuationOrder[:0]
 	for _, path := range callContinuationOrder {
-		if on[path] {
+		if _, ok := on[path]; ok {
 			order = append(order, path)
 		} else {
 			delete(callContinuations, path)
@@ -176,6 +208,15 @@ func pruneCalls(files []file) {
 
 func keepCalls(path string, st *callFile) {
 	defer trimCallRevisions(time.Now())
+	if callRoot == "" {
+		// what is kept is of this root: a Sessions parse that read a
+		// rollout's calls along (callsRide) keeps them before any Requests
+		// read named the root, and pruneCalls then took the root for a
+		// moved one and dropped them, Codex window and all. The shard on
+		// disk has no window, so the next line read the rollout whole
+		// again (#4369: 10.8 MB for one line after a start).
+		callRoot = callCacheDir()
+	}
 	callCounts[path] = len(st.Calls)
 	delete(callCache, path)
 	order := callOrder[:0]
@@ -208,13 +249,15 @@ func keepCalls(path string, st *callFile) {
 // in callFiles needs an entry here, in lineCallReaders or in
 // resumeCallReaders, or its calls are never read.
 var wholeCallReaders = map[string]func(file) (*callFile, bool){
-	"opencode":  readOpenCodeCalls,
-	"zcode":     readZCodeCalls,
-	"workbuddy": readWorkBuddyCalls,
-	"codebuddy": readWorkBuddyCalls, // #1779
+	"opencode":     readOpenCodeCalls,
+	"zcode":        readZCodeCalls,
+	"workbuddy":    readWorkBuddyCalls,
+	"workbuddy-ai": readWorkBuddyCalls,
+	"codebuddy":    readWorkBuddyCalls, // #1779
 	// #1605
 	"minimax-code": readMiniMaxCalls,
-	"agy":          readAgyCalls, // #2097
+	"agy":          readAgyCalls,         // #2097
+	"antigravity":  readAntigravityCalls, // #2190
 }
 
 // resumeCallReaders read an agent's calls from a file only appended to that
@@ -245,9 +288,12 @@ type lineCallReader struct {
 // lineCallReaders are the agents in callSources, beside callFiles' own,
 // whose calls are each one line of a file only appended to.
 var lineCallReaders = map[string]lineCallReader{
-	"kimi": {kimiCallsBegin, kimiCallLine, nil},         // #1607
-	"pi":   {piCallsBegin, readPiCallLine, piCallsKept}, // #1951
-	"omp":  {piCallsBegin, readPiCallLine, piCallsKept},
+	"kimi":  {kimiCallsBegin, kimiCallLine, nil},         // #1607
+	"pi":    {piCallsBegin, readPiCallLine, piCallsKept}, // #1951
+	"raft":  {piCallsBegin, readPiCallLine, piCallsKept},
+	"cindy": {piCallsBegin, readPiCallLine, piCallsKept},
+	"omp":   {piCallsBegin, readPiCallLine, piCallsKept},
+	"grok":  {grokCallsBegin, grokCallLine, grokCallsKept}, // #4423
 }
 
 // callLock is the lock a file's calls are read under, so that two readers
@@ -271,6 +317,11 @@ func readCalls(f file) *callFile {
 		owned = true
 	}
 	if old != nil && old.Size == f.size && old.Mod == f.mod.UnixNano() {
+		if owned {
+			// a Claude session's calls a parse read along (callsRide) left
+			// their window on disk, not here
+			old = withCallRevisions(old)
+		}
 		callsMu.Lock()
 		if generation == callGeneration {
 			keepCalls(f.path, old)
@@ -378,21 +429,31 @@ func readCalls(f file) *callFile {
 // Codex app packs or repacks every rollout (11,591 on 10-20) the start's
 // warm-up parsed each for the Sessions page and then read each again for
 // Requests' calls: ~48 GB decompressed twice. Reading both on one pass
-// leaves readCalls a shard on disk that is already up to date.
+// leaves readCalls a shard on disk that is already up to date. A Claude
+// session read from its start rides too: a first start scanned each again
+// for its calls, ~20 s of its CPU on 13 GB of them (#2278).
 type callsRide struct {
 	f          file
 	st         *callFile
 	generation uint64
 	lock       *sync.Mutex
 	sum, calls bool // what each reader's head said of the line being read
+	claude     bool
 }
 
-// callsAlong is a ride for f's calls when f is a packed Codex rollout whose
-// calls are to be read again, and nil otherwise. It holds the file's calls
-// lock until release, so a readCalls of the file meanwhile waits for what
-// the ride reads rather than read it again.
-func callsAlong(f file) *callsRide {
-	if f.agent != "codex" || !packed(f.path) || f.cold || wslCold(f.path) {
+// callsAlong is a ride for f's calls when f is a Codex rollout whose calls
+// are to be read again, or a Claude session whose calls were never read,
+// and nil otherwise. A plain rollout rides only when both reads start at
+// its first line (parseWith lets the ride go otherwise): read alone, a
+// cold start read every rollout twice, 3.5 GB for 1.7 GB of them (#4369).
+// sum is the summary the parse goes on from: a plain rollout's with its
+// Codex window is read on, so its calls are left to readCalls unlooked.
+// It holds the file's calls lock until release, so a readCalls of the
+// file meanwhile waits for what the ride reads rather than read it again.
+func callsAlong(f file, sum *state) *callsRide {
+	claude := f.agent == "claude" || f.agent == "claude-desktop"
+	onward := !packed(f.path) && sum != nil && sum.Codex != nil
+	if f.agent != "codex" && !claude || f.agent == "codex" && onward || f.cold || wslCold(f.path) {
 		return nil
 	}
 	lock := callLock(f.path)
@@ -400,6 +461,14 @@ func callsAlong(f file) *callsRide {
 	callsMu.Lock()
 	old, generation := callCache[f.path], callGeneration
 	callsMu.Unlock()
+	if claude {
+		// calls read before are read on, or again, by readCalls as they were
+		if _, err := os.Stat(callCachePath(f.path)); old != nil || !errors.Is(err, fs.ErrNotExist) {
+			lock.Unlock()
+			return nil
+		}
+		return &callsRide{f: f, st: prepareCalls(f, nil, false), generation: generation, lock: lock, claude: true}
+	}
 	owned := false
 	if old == nil {
 		old = loadKept(f)
@@ -426,7 +495,11 @@ func (r *callsRide) ride(head func([]byte) bool, line func([]byte, int64, int64)
 			}
 			if r.calls {
 				r.st.At, r.st.End = start, end
-				codexCallLine(r.st, b)
+				if r.claude {
+					claudeCallLine(r.st, b)
+				} else {
+					codexCallLine(r.st, b)
+				}
 			}
 			return true
 		}
@@ -445,7 +518,17 @@ func (r *callsRide) finish(off int64, err error) {
 	st.Off, st.Size, st.Mod = off, f.size, f.mod.UnixNano()
 	st.ContentHash = prefixHash(f.path, off)
 	writeCalls(st, 0, false)
+	if r.claude {
+		if st.Claude != nil && !workingRevision(f.mod.UnixNano(), time.Now()) {
+			st = st.withoutRevisions()
+		}
+		writeCallRevisions(st)
+	}
 	st.dirty = nil
+	if r.claude {
+		// on disk only: a Sessions read keeps no calls (readCalls loads them)
+		return
+	}
 	callsMu.Lock()
 	if r.generation == callGeneration {
 		keepCalls(f.path, st)
@@ -490,6 +573,7 @@ type callDiskState struct {
 	Head               string
 	HeadSize           int
 	Path, Agent        string
+	Parser             int // callParseVersions[Agent] when written
 	At, End, AsstEnd   int64
 	Session, Requested string
 	LastUser, LastAsst time.Time
@@ -500,17 +584,25 @@ type callDiskState struct {
 	PiCwd               string
 	PiSince             time.Time
 	PiProvider, PiModel string
+	// Grok Build's carry (grokCallCarry), flat: GrokOn when there is one
+	GrokOn    bool
+	GrokSince time.Time
+	GrokModel string
+	GrokAsked string
 }
 
 func diskCallState(s *callFile) callDiskState {
 	d := callDiskState{ContentHash: s.ContentHash, Size: s.Size, Mod: s.Mod, Off: s.Off, Head: s.Head, HeadSize: s.HeadSize,
-		Path: s.Path, Agent: s.Agent, At: s.At, End: s.End, AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested,
+		Path: s.Path, Agent: s.Agent, Parser: callParseVersions[s.Agent], At: s.At, End: s.End, AsstEnd: s.AsstEnd, Session: s.Session, Requested: s.Requested,
 		LastUser: s.LastUser, LastAsst: s.LastAsst}
 	if s.Dsh != nil {
 		d.Dsh, _ = json.Marshal(s.Dsh)
 	}
 	if p := s.Pi; p != nil {
 		d.PiOn, d.PiHeader, d.PiCwd, d.PiSince, d.PiProvider, d.PiModel = true, p.Header, p.Cwd, p.Since, p.Provider, p.Model
+	}
+	if g := s.Grok; g != nil {
+		d.GrokOn, d.GrokSince, d.GrokModel, d.GrokAsked = true, g.Since, g.Model, g.Asked
 	}
 	return d
 }
@@ -526,6 +618,9 @@ func (s callDiskState) restore() *callFile {
 	}
 	if s.PiOn {
 		st.Pi = &piCarry{s.PiHeader, s.PiCwd, s.PiSince, s.PiProvider, s.PiModel}
+	}
+	if s.GrokOn {
+		st.Grok = &grokCallCarry{Since: s.GrokSince, Model: s.GrokModel, Asked: s.GrokAsked}
 	}
 	return st
 }
@@ -597,7 +692,7 @@ func loadCalls(f file) *callFile {
 			return nil
 		}
 		frame := k.frame()
-		if decodeFrame(data, frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent {
+		if decodeFrame(data, frame) != nil || frame.State.Path != f.path || frame.State.Agent != f.agent || frame.State.Parser != callParseVersions[f.agent] {
 			return nil
 		}
 		if st != nil && frame.State.Off < st.Off {
@@ -655,6 +750,12 @@ func loadKept(f file) *callFile {
 	return st
 }
 
+// framePatchBufs holds the patches writeCalls makes a frame of, for the
+// next frame and the next file's write: each frame grew its own up to
+// framePatches, ~1 GB of a first start's 21 GB history (#2278). A frame
+// holds no more than framePatches, so a kept one is at most ~1 MB.
+var framePatchBufs = sync.Pool{New: func() any { return new([]callPatch) }}
+
 func writeCalls(st *callFile, start int, appendOnly bool) {
 	state := diskCallState(st)
 	var data bytes.Buffer
@@ -675,8 +776,15 @@ func writeCalls(st *callFile, start int, appendOnly bool) {
 		binary.LittleEndian.PutUint32(b[at:], uint32(len(b)-at-len(header)))
 		binary.LittleEndian.PutUint32(b[at+4:], crc32.ChecksumIEEE(b[at+len(header):]))
 	}
+	patches := framePatchBufs.Get().(*[]callPatch)
+	defer func() {
+		clear(frame.Patches[:cap(frame.Patches)]) // nothing of st is kept in the pool
+		*patches = frame.Patches[:0]
+		framePatchBufs.Put(patches)
+	}()
+	frame.Patches = (*patches)[:0]
 	begin := func() {
-		frame = callFrame{State: state, Strings: []string{""}, Calls: len(st.Calls)}
+		frame = callFrame{State: state, Strings: []string{""}, Calls: len(st.Calls), Patches: frame.Patches[:0]}
 		dict = map[string]uint32{"": 0}
 	}
 	begin()

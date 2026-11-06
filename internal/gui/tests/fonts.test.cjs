@@ -21,6 +21,7 @@ async function open(browser, lang = "en", options = {}) {
     cur: { lang, theme: "light", textSize: 100, currency: "usd", tray: "panel", version: "0.1.0", visionModels: [], imageGenModels: [], ...options.settings } };
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = [];
   page.on("pageerror", e => { errors.push(e.message); console.error(e.message); });
   await page.route("**/*", async route => {
@@ -364,6 +365,40 @@ for (const [engine, runtime] of engines) {
         assert.deepEqual(errors, []);
         await close();
       }
+    } finally { await browser.close(); }
+  });
+
+  // unscientific9: a tab's first open of Settings stuck while the probe
+  // measured every server family in the click's task. Each measure is made
+  // to cost 1 ms here, so 400 families held one task for 1.6 s before; the
+  // probe now yields, and measures the two generics once.
+  for (const lang of ["en", "zh"]) test(`${engine} ${lang}: a browser tab's font probe never holds the page`, async () => {
+    const browser = await runtime.launch();
+    try {
+      const fonts = Array.from({ length: 400 }, (_, i) => ({ name: "Probe Family " + i, styles: [face("Probe Family " + i)] }));
+      fonts.push({ name: "Georgia", styles: [face("Georgia")] });
+      const init = () => {
+        const measure = CanvasRenderingContext2D.prototype.measureText;
+        window.__probe = { calls: 0, longest: 0 };
+        let start = null;
+        CanvasRenderingContext2D.prototype.measureText = function (text) {
+          const now = performance.now();
+          if (start === null) start = now, setTimeout(() => { start = null; });
+          for (const end = now + 1; performance.now() < end;);
+          window.__probe.calls++;
+          window.__probe.longest = Math.max(window.__probe.longest, performance.now() - start);
+          return measure.call(this, text);
+        };
+      };
+      const { page, errors, close } = await open(browser, lang, { web: true, list: fonts, init });
+      const probe = await page.evaluate(() => window.__probe);
+      const shown = await page.evaluate(() => fontList.map(f => f.name));
+      assert(!shown.some(n => n.startsWith("Probe Family")), "a family this browser doesn't draw isn't offered");
+      assert(probe.calls >= fonts.length, "every family was measured: " + probe.calls);
+      assert(probe.calls <= 2 * fonts.length + 4, "the generics are measured once: " + probe.calls + " measures");
+      assert(probe.longest < 300, "the probe held one task for " + probe.longest.toFixed(0) + " ms");
+      assert.deepEqual(errors, []);
+      await close();
     } finally { await browser.close(); }
   });
 
