@@ -4,15 +4,13 @@
 避免在浏览器多标签之间反复切换。
 
 - 运行时**零第三方依赖**（只用 Node 内置模块），`npm install` 只装 `tsx` / `typescript`
-- CodeBuddy / Qoder / Trae 支持**扫码或打开链接登录**，授权后自动落库，一个账号一张卡片
+- CodeBuddy / Trae 支持**扫码或打开链接登录**；Qoder 只保留**网页端登录**（自动抓 Cookie），授权后自动落库，一个账号一张卡片
 - 后端聚合 + 缓存 + 失败降级，前端纯静态（无构建步骤）
 - 凭证默认**不下发到浏览器**：只有被显式声明为「可托管」的密钥才提供
   掩码预览 + 按需复制（默认仅限本机），`accounts.json` / `.env` 改动后**热加载**，无需重启
 
-> 开发前的 GitHub 开源项目调研、复用评估与接口实测记录见
-> [`docs/开源项目调研与复用评估.md`](docs/开源项目调研与复用评估.md)。
-> **换成自己的账号（逐平台抓凭证 + 字段映射 + 排错）见
-> [`docs/凭证配置指南.md`](docs/凭证配置指南.md)。**
+> 设计、修复与取数调研文档仅保留在作者本地，不随仓库发布；
+> 使用所需的信息已写在本 README 与源码注释中。
 
 ---
 
@@ -56,8 +54,8 @@ A1etherOpenAi 是多账号合并成一张卡，卡片级没有单一账号身份
 | --- | --- | --- |
 | CodeBuddy | 手机扫码 / 新窗口打开链接 | 用 CodeBuddy 客户端或微信完成授权 |
 | WorkBuddy 国际版 | 手机扫码 / 网页端登录 | 目标固定 `codebuddy.ai`；令牌写入 `CODEBUDDY_GLOBAL_*`；网页端登录会自动打开调试 Chrome 抓 Cookie（批次明细更全） |
-| Qoder 国内版 | 手机 Qoder App 扫码 / 新窗口打开链接 | 目标固定 `qoder.com.cn`；令牌写入 `QODER_*` |
-| Qoder 国际版 | 手机 Qoder App 扫码 / 新窗口打开链接 | 目标固定 `qoder.com`；令牌写入 `QODER_GLOBAL_*`（国际站设备流未实测，网页端登录更稳） |
+| Qoder 国内版 | 网页端登录 | 目标固定 `qoder.com.cn`；自动打开调试 Chrome 抓 Cookie（`QODER_COOKIE`），扫码/设备令牌已下线（拿不到逐包批次明细） |
+| Qoder 国际版 | 网页端登录 | 目标固定 `qoder.com`；自动打开调试 Chrome 抓 Cookie（`QODER_GLOBAL_COOKIE`），同样只保留网页端登录 |
 | Trae | 新窗口打开链接 | 回调固定 `127.0.0.1`，必须在本机浏览器完成；令牌写入 `TRAE_*` |
 | Trae 国际版 | 新窗口打开链接 | 目标固定 `trae.ai`，回调同样固定 `127.0.0.1`；令牌写入 `TRAE_GLOBAL_*`，与国内版互不通用 |
 
@@ -117,27 +115,38 @@ npm run probe            # ④ 验证取数是否正常
 | `npm run typecheck` | 类型检查 |
 | `npm run build && npm run serve` | 编译到 `dist/` 后以纯 JS 运行 |
 
-手工配置（不用抓取工具）的完整步骤、各平台接口说明与排错表见
-[`docs/凭证配置指南.md`](docs/凭证配置指南.md)。
-
-`npm run probe` 的实测输出示例（真实账号）：
+各平台的凭证字段与登录入口见看板里的「平台与账号」；
+`npm run probe` 的示例输出：
 
 ```
 ● Qoder              ok    252ms
-                  余额 500 CREDITS  最快到期 2026-10-23
-                    · 赠送资源包     100   过期 2026-10-29
-                    · 赠送资源包     100   过期 2026-10-23
+                  余额 1200 CREDITS  最快到期 2026-12-31
+                    · 赠送资源包     100   过期 2026-12-31
+                    · 赠送资源包     100   过期 2026-12-31
 ● Trae               ok    228ms
-                  余额 3538.45 CREDITS  最快到期 2026-09-30
-                  积分额度（本期）: 3538.45/4900
+                  余额 3500 CREDITS  最快到期 2026-12-31
+                  积分额度（本期）: 3500/5000
 ● CodeBuddy          ok    849ms
-                  余额 2789.65 CREDITS  最快到期 2026-09-30
+                  余额 2800 CREDITS  最快到期 2026-12-31
 ● CodeArts 华为云      ok   1129ms
-                  余额 8500 CREDITS  最快到期 2026-10-26
-                    · 基础套餐积分   500    过期 2026-10-26
-                    · 赠送积分包    8000    过期 2026-10-26
+                  余额 8500 CREDITS  最快到期 2026-12-31
+                    · 基础套餐积分   500    过期 2026-12-31
+                    · 赠送积分包    8000    过期 2026-12-31
 合计 4 个平台，正常 4 个，异常 0 个。
 ```
+
+---
+
+## 桌面版（macOS）
+
+已提供 macOS 桌面版（Apple Silicon + Intel，macOS 13+），目标机器无需安装 Node：
+
+1. 从 [Releases](https://github.com/A1ether/power-meter/releases/latest) 下载 `PowerMeter-<版本>.dmg`；
+2. 拖入「应用程序」，首次打开时右键 →「打开」（应用未做 Apple 公证）；
+3. 启动后点「＋ 添加平台账号」，登录或填写凭证。
+
+配置保存在 `~/Library/Application Support/PowerMeter/`。扫码 / 网页端登录需要本机安装
+Google Chrome；MiniMax Code 目前仍需手工编辑该目录下的 `.env`。
 
 ---
 
@@ -149,8 +158,6 @@ power-meter/
 ├── tsconfig.json                    # ESM + NodeNext
 ├── .env.example                     # 环境变量模板
 ├── accounts.example.json            # 账号配置模板（复制为 accounts.json）
-├── docs/
-│   └── 开源项目调研与复用评估.md      # gh CLI 调研记录 + 复用方案 + 接口实测
 ├── public/                          # 前端（无构建步骤，直接被后端托管）
 │   ├── index.html                   # 页面骨架 + <template> 卡片模板
 │   ├── styles.css                   # 设计系统：明暗双主题、到期三色分级、脉冲高亮
@@ -331,19 +338,19 @@ interface ProviderSnapshot {
 
 ### 各平台配置
 
-除 A1etherOpenAi（API 密钥）、MiniMax Code（网页端登录态 token）、商汤小浣熊（令牌藏在 Cookie 里）
+除 A1etherOpenAi（API 密钥）、MiniMax Code（网页登录态或 OAuth 令牌）、商汤小浣熊（令牌藏在 Cookie 里）
 与 CodeArts（推荐 AK/SK）外，其余平台（含千问办公）的凭证都只需要 **一个 Cookie**：
 
 | 平台 | `provider` | 需要的凭证 | 关键 `options` |
 | --- | --- | --- | --- |
-| Qoder 国内版 | `qoder` / `qoder.cn` | `cookie`（`QODER_COOKIE`）<br>或扫码登录写入的 `accessToken` + `refreshToken`（`QODER_ACCESS_TOKEN` / `QODER_REFRESH_TOKEN`） | 站点固定 `qoder.com.cn`，无站点选项；`origin` 可覆盖为自定义域名/代理。两种凭证模式都会拆积分批次：Cookie 模式给出逐包明细（`quota_detail[]`），令牌模式只能给出账户级分桶 + 可选的 `dedicated_resource_packages[]`（逐包明细需 Cookie） |
-| Qoder 国际版 | `qoder-intl` / `qoder.com` / `qoder-global` | `cookie`（`QODER_GLOBAL_COOKIE`）<br>或登录写入的 `accessToken` + `refreshToken`（`QODER_GLOBAL_ACCESS_TOKEN` / `QODER_GLOBAL_REFRESH_TOKEN`） | 站点固定 `qoder.com`，无站点选项；`origin` 可覆盖。积分批次口径与国内版一致 |
+| Qoder 国内版 | `qoder` / `qoder.cn` | `cookie`（`QODER_COOKIE`）<br>或历史扫码登录写入的 `accessToken` + `refreshToken`（`QODER_ACCESS_TOKEN` / `QODER_REFRESH_TOKEN`；扫码入口已下线，仅供既有账号使用） | 站点固定 `qoder.com.cn`，无站点选项；`origin` 可覆盖为自定义域名/代理。两种凭证模式都会拆积分批次：Cookie 模式给出逐包明细（`quota_detail[]`），令牌模式只能给出账户级分桶 + 可选的 `dedicated_resource_packages[]`（逐包明细需 Cookie） |
+| Qoder 国际版 | `qoder-intl` / `qoder.com` / `qoder-global` | `cookie`（`QODER_GLOBAL_COOKIE`）<br>或历史登录写入的 `accessToken` + `refreshToken`（`QODER_GLOBAL_ACCESS_TOKEN` / `QODER_GLOBAL_REFRESH_TOKEN`；扫码入口已下线，仅供既有账号使用） | 站点固定 `qoder.com`，无站点选项；`origin` 可覆盖。积分批次口径与国内版一致 |
 | Trae | `trae` / `trae.cn` | `cookie`（`TRAE_COOKIE`）<br>或「打开链接登录」写入的 `accessToken` + `refreshToken` + `deviceKey`（`TRAE_ACCESS_TOKEN` / `TRAE_REFRESH_TOKEN` / `TRAE_DEVICE_KEY`） | JWT 由 Cookie 自动续签；令牌模式由 `deviceKey` 签名续期 |
 | Trae 国际版 | `trae-global` / `trae.ai` | `cookie`（`TRAE_GLOBAL_COOKIE`）<br>或「打开链接登录」写入的 `accessToken` + `refreshToken` + `deviceKey`（`TRAE_GLOBAL_ACCESS_TOKEN` / `TRAE_GLOBAL_REFRESH_TOKEN` / `TRAE_GLOBAL_DEVICE_KEY`） | 站点固定 `trae.ai`，与国内版互不通用；计费面是 v1 `user_current_entitlement_list`，余额按账户口径显示美元 / 积分 / 请求次数（`options.apiHost`、`options.usageUrl` 可覆盖主机） |
 | CodeBuddy | `codebuddy` | `cookie`（**必须含 `www` 子域**）<br>或扫码登录写入的 `accessToken` + `refreshToken`（`CODEBUDDY_ACCESS_TOKEN` / `CODEBUDDY_REFRESH_TOKEN`）| — |
 | WorkBuddy 国际版 | `codebuddy-intl` / `codebuddy.ai` / `workbuddy.ai` | `cookie`（**必须含 `www` 子域**，写 `CODEBUDDY_GLOBAL_COOKIE`）<br>或扫码登录写入的 `accessToken` + `refreshToken`（`CODEBUDDY_GLOBAL_ACCESS_TOKEN` / `CODEBUDDY_GLOBAL_REFRESH_TOKEN`）| 站点固定 `codebuddy.ai`，与国内版互不通用 |
 | CodeArts | `codearts` | **网页端登录（推荐，一键添加）**：卡片上点「网页端登录」，在自动打开的调试 Chrome 里登录华为云即可，Cookie 自动落 `CODEARTS_COOKIE` 并由 `npm run codearts:refresh` 定时续期<br>`accessKey` + `secretKey`（长期有效，多账号路径）<br>`cookie`（兼容，会话过期需重抓） | 可选 `authMode: "auto" \| "aksk" \| "cookie"`、`resourceType`、`region` |
-| MiniMax Code | `minimax` / `minimax-code` / `agent.minimax.cn` | `token`（`_token`）+ `cookie`（SSO）+ 真实身份 `userId`/`opTicket`/`uuid`（capture 一并抓取，缺一不可）| `site: "cn"`（默认）或 `"global"` |
+| MiniMax Code | `minimax` / `minimax-code` / `agent.minimax.cn` | **扫码登录（推荐，一键添加）**：卡片上点「扫码登录」，手机确认后写入 `accessToken` + `refreshToken`（`MINIMAX_ACCESS_TOKEN` / `MINIMAX_REFRESH_TOKEN`）<br>**网页端登录（一键添加）**：在自动打开的调试 Chrome 里登录 `agent.minimax.cn`，自动抓取 `token`（`_token`）+ `cookie`（SSO）+ 真实身份 `userId`/`opTicket`/`uuid`<br>手工兜底：`token` + `cookie` + `userId` | `site: "cn"`（默认）或 `"global"`；`authMode: "web" \| "oauth"`（登录自动写入） |
 | 千问办公 | `qwenwork` / `qwenwork.cn` / `qwen-office` | `cookie`（`QWENWORK_COOKIE`，网页登录态；生产环境不带 `Authorization`）| 无；`origin` 可覆盖为代理地址 |
 | 商汤小浣熊 | `xiaohuanxiong` / `xiaohuanxiong.com` / `raccoon` | `token`（`XIAOHUANXIONG_TOKEN`，可从 Cookie 的 `xhx_token` / `raccoon_token` 推导）+ `cookie` + `refreshToken`（capture / 网页端登录一并写入）| 无；`origin` 可覆盖为代理地址 |
 | A1etherOpenAi | `a1etheropenai` / `d1v.ai`（上游服务域名保持不变，也是它的解析别名） | `apiKey`（查余额）<br>`paiApiKey`（托管复制） | `baseUrl`、`revealApiKey` |
@@ -372,7 +379,7 @@ npm run probe -- codebuddy               # ④ 验证取数，然后刷新看板
 也可以全程在看板上完成：顶栏「平台与账号」→ 选平台 → 展开「手工填写凭证」→ 粘贴 Cookie →
 「验证并添加」，服务会自己分配 `.env` 槽位（第二个账号 = `CODEBUDDY_COOKIE_2`）并命名。
 同一份表单在卡片上也有（点「重新登录」展开），但它走的是**新增账号**接口；
-要刷新卡片自己那份凭证，用面板里的扫码 / 网页端登录（同一平台账号只更新令牌、不新增卡片）。
+要刷新卡片自己那份凭证，用面板里的登录按钮（同一平台账号只更新凭证、不新增卡片）。
 
 | 规则 | 说明 |
 | --- | --- |
@@ -383,8 +390,7 @@ npm run probe -- codebuddy               # ④ 验证取数，然后刷新看板
 
 #### 取 Cookie / Token 的通用步骤
 
-> 每个平台的**逐步操作说明、字段映射写法与排错表**见
-> [`docs/凭证配置指南.md`](docs/凭证配置指南.md)。
+> 每个平台的凭证字段可在看板「平台与账号」里查看；登录入口会按平台动态展示。
 
 1. 浏览器登录目标平台，打开 DevTools（`⌥⌘I`）→ Network → 筛 Fetch/XHR；
 2. 进入「用量 / 账单 / 账户」页面，找到返回余额或积分列表的请求；
@@ -458,7 +464,7 @@ A1etherOpenAi 卡片上就有入口：
 npm run a1etheropenai:add -- <账号密钥> <项目密钥>
 npm run a1etheropenai:add -- --text "个人apikey：sk-xxx
 对应的项目apikey：yyy"
-npm run a1etheropenai:add -- --remove "A1etherOpenAi · jwig5h"
+npm run a1etheropenai:add -- --remove "A1etherOpenAi · abcd12"
 npm run a1etheropenai:add -- --list
 ```
 
@@ -476,7 +482,7 @@ npm run a1etheropenai:add -- --list
    并在 `accounts.json` 追加一条 `provider: "a1etheropenai"`。
 
 **两把密钥都验证通过才会写文件**，任何一步失败都原样退出、不留半截配置。
-账号名默认取邮箱前缀（如 `A1etherOpenAi · sb4hnm`），撞名会自动补 `-2`；
+账号名默认取邮箱前缀（如 `A1etherOpenAi · efgh34`），撞名会自动补 `-2`；
 `--dry-run` 只验证不写入；重复添加同一把账号密钥会被拒绝（除非 `--force`）。
 
 删除时只清理**不再被任何账号引用**的 `.env` 变量——槽位是按字母复用的，
@@ -492,7 +498,7 @@ npm run a1etheropenai:add -- --list
   "accounts": [
     {
       "provider": "a1etheropenai",
-      "displayName": "A1etherOpenAi · sb4hnm",       // 多账号靠它区分，也会显示在卡片上
+      "displayName": "A1etherOpenAi · efgh34",       // 多账号靠它区分，也会显示在卡片上
       "enabled": true,
       "credentials": {
         "apiKey": "${A1etherOpenAi_B_API_KEY}",       // 查余额
@@ -518,8 +524,8 @@ A1etherOpenAi 有两套计量，但**只有 quota 有意义**：
 两个真实账号的实测：
 
 ```
-账号 A: 钱包 $8.764224   quota 3,382,112 ≈ $6.764224   差额 $2.000000
-账号 B: 钱包 $8.800000   quota 3,400,000 ≈ $6.800000   差额 $2.000000
+账号 A: 钱包 $8.000000   quota 3,000,000 ≈ $6.000000   差额 $2.000000
+账号 B: 钱包 $8.000000   quota 3,000,000 ≈ $6.000000   差额 $2.000000
 ```
 
 换算率恒定（`1 USD = 500,000 quota`，4 条扣减记录的 `quota ÷ usd`
@@ -535,18 +541,18 @@ A1etherOpenAi 有两套计量，但**只有 quota 有意义**：
 
 ```
 ● A1etherOpenAi                                        [国际] [永不过期]
-12,292,423 QUOTA                            [＋ 添加账号]
+1,000,000 QUOTA                             [＋ 添加账号]
 4 个账号
 账号 · 托管密钥                                     可用额度
 ┌───────────────────────────────────────────────────────────┐
-│ jwig5h@qabq.com                          2,110,311 QUOTA  │
-│ A1etherOpenAi_PAI_API_KEY      [显示] [复制] [删除]                  │
-│ ftWJ0G…B7tK                                               │
-│ 已用 1,274,966 quota（279 次请求）                          │
+│ account1@example.com                       200,000 QUOTA    │
+│ A1etherOpenAi_B_PAI_API_KEY  [显示] [复制] [删除]              │
+│ EXAMPLE…0000                                               │
+│ 已用 50,000 quota（12 次请求）                              │
 ├───────────────────────────────────────────────────────────┤
-│ mehopo8168@meinvr.com                    3,382,112 QUOTA  │
-│ A1etherOpenAi_PAI_API_KEY      [显示] [复制] [删除]                  │
-│ wITpPj…XCO7                                                │
+│ account2@example.com                       300,000 QUOTA    │
+│ A1etherOpenAi_B_PAI_API_KEY  [显示] [复制] [删除]              │
+│ EXAMPLE…0000                                               │
 └───────────────────────────────────────────────────────────┘
                 展开其余 2 个 ⌄
 ```
@@ -577,7 +583,7 @@ A1etherOpenAi 走的是官方 OpenAPI（<https://api.d1v.ai/api/openapi.json>）
 | 账号标识（卡片里那条显示 email）| `GET /api/user/info` |
 | 托管密钥读取（看板自己的接口）| `POST /api/reveal` |
 
-托管密钥默认只显示掩码（如 `ftWJ0G…B7tK`），
+托管密钥默认只显示掩码（如 `EXAMPLE…0000`），
 点「显示」或「复制」才会通过 `/api/reveal` 按需读取明文——
 **接口默认只允许本机访问**，规则见下节。
 
@@ -669,10 +675,13 @@ Trae 的 OAuth 回调 `/authorize` 是唯一例外：浏览器从 trae.cn 跳回
 - **Trae 的 JWT 只有 1 天有效**，但适配器会用 Cookie 自动续签，因此你只需保证 Cookie 有效。
 - **MiniMax Code 取的是客户端内部云接口**（官方未公开 API，对应 App 里的「积分明细」）：
   签到积分自到账起 30 天有效，过期批次会移出列表；平台控制台 `console/plan` 上的「积分」
-  是已购积分口径，与签到积分不是同一笔账，显示 0 属正常。凭证 = 请求头 token + SSO Cookie +
-  真实身份参数（user_id/op_ticket/uuid，服务端会与 token 交叉校验，不能用 0 顶替），
-  `npm run capture -- minimax` 会一次性全部抓取；登录态失效后卡片显示 `unauthorized`，
-  重新抓取即可。
+  是已购积分口径，与签到积分不是同一笔账，显示 0 属正常。两种登录态都支持：
+  - 「扫码登录」走 MiniMax Code 的 OAuth 设备码（`account.minimax.cn/oauth2/device/code`），
+    写入 `accessToken` / `refreshToken`，accessToken 临近过期时会自动续期并写回 `.env`；
+  - 「网页端登录」打开调试 Chrome，自动抓取 `_token` + SSO Cookie + 真实身份参数
+    （user_id/op_ticket/uuid，服务端会与 token 交叉校验，不能用 0 顶替）。
+  `npm run capture -- minimax` 仍可手工抓取；登录态失效后卡片显示 `unauthorized`，重新登录即可。
+  已配置的账号可在卡片右上角「删除」或「平台与账号」弹窗里删除（删除前自动备份到 `.run/`）。
 - **千问办公取的是网页端内部接口**（没有公开查询 API）：
   `GET /user/balance` 给「剩余可用」，`GET /user/wallets` 给三桶构成
   （`daily_credits` / `monthly_credits` / `longterm_credits` 各自的 `total_balance`），
@@ -870,4 +879,15 @@ export const yourPlatformAdapter: ProviderAdapter = {
 | 前端 | 原生 HTML/CSS/JS | 无构建步骤 = 打开即用；一个看板不需要框架 |
 | 前端构建 | 无 | `public/` 被后端直接托管 |
 
-调研结论与取舍过程见 [`docs/开源项目调研与复用评估.md`](docs/开源项目调研与复用评估.md)。
+调研结论与取舍过程保留在作者本地文档中，不随仓库发布。
+
+---
+
+## 许可
+
+[MIT](LICENSE)
+
+## 免责声明
+
+本项目是本地第三方看板，与各平台官方无关。仅用于查看你本人有权使用的账号；
+使用登录态 / 接口取数可能受各平台服务条款约束，请自行确认并承担相应风险。

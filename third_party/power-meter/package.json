@@ -1,6 +1,6 @@
 {
   "name": "power-meter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "多平台 AI 账户余额 / 积分看板，聚焦「最快到期」优先消耗",
   "type": "module",
@@ -23,6 +23,8 @@
     "typecheck": "tsc --noEmit",
     "test:pagination": "tsx src/cli/test-pagination.ts",
     "build": "tsc -p tsconfig.json",
+    "desktop:build": "bash tools/build-macos-app.sh",
+    "desktop:install": "bash tools/build-macos-app.sh --install",
     "serve": "node dist/server.js",
     "serve:sidecar": "node dist/server.js --port 0 --no-static",
     "build:sidecar": "npm run build && bun build --compile --minify dist/server.js --outfile dist/power-meter-sidecar"
