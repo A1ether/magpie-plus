@@ -2323,6 +2323,24 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 				l.bal, l.balUnit, l.balIn = b, bu, whose+"\x00"+bu
 			}
 			wg.lefts[c.allowanceKey()] = l
+		} else if c.p.Account != nil && routingOf(p.Routing) == "" {
+			// the plugin told no allowance, but the Balance board may know the
+			// account's credits (Raccoon answers a balance and no window): that
+			// is a prepaid wallet, and the batch running out soonest is when
+			// Smart goes by. Without it the account stayed unknown and went
+			// after every known one, never taking a request in a group.
+			if bal, unit, at, has := powermeterexpiry.Wallet(c.p.ID, c.p.Account.User); has {
+				l := left{bal: bal, balUnit: unit, balIn: whose + "\x00" + unit}
+				if bal <= 0 {
+					l.used = 100 // an empty wallet is a reading of nothing left
+				}
+				if !at.IsZero() {
+					l.renews, l.soon, l.lapse = []time.Time{at}, []time.Time{at}, at
+					l.due, l.dueExpiry = at, true
+					l.pace = 100 / max(at.Sub(now).Hours(), 1)
+				}
+				wg.lefts[c.allowanceKey()] = l
+			}
 		}
 	}
 	if len(cs) < 2 {

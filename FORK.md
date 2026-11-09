@@ -539,6 +539,22 @@ go test ./internal/gui -run 'TestBuiltin|TestTray|TestCoreScript|TestForkedAppHa
 - ✅ 用本机运行中的 sidecar（`/api/summary`，12 平台 / 163 笔）逐账号核对映射：workbuddy 的两个账号（夜雨声烦 / 188****1835）、codearts（IAM 名）、trae-cn、qoder-cn、qoder、minimax-code、qwenwork、raccoon、workbuddy-ai 全部命中；trae-global 没有未来到期批次，返回 unknown（正确）
 - ⚠️ 未跑真实网关请求验证：需要一个真实 `expiry` 池；「一次真实请求按批次顺序落到账号」尚未在真实流量里观察
 
+### 13.5 补充：smart 也能用 sidecar 的余额（2026-11-06）
+
+问题：商汤小浣熊的插件在「积分明细凑不出当前余额」时只回 `balance: "9000 credits"`、`windows: []`，magpie 侧没有 allowance，Raccoon 在 Routing 页显示「剩余额度未知」，默认 `smart` 把它排在所有已知账号之后——组里的请求永远轮不到它。
+
+修法（只补数据，不改 `smart` 的排序规则）：
+
+| 位置 | 内容 |
+|---|---|
+| `internal/powermeterexpiry` | `fetch` 读卡片级 `balance`（金额 + 币种），新增 `Wallet(provider, user)`：返回该账号的余额与「最早到期批次」；名字映射与 `Earliest` 共用 `matching`，sidecar 关/读失败/折叠卡片仍然 unknown |
+| `internal/gateway/routing.go` | `weighRouted` 里，账号的 allowance 未知且池子路由为 `smart`（`routingOf == ""`）时，问 sidecar 要 `Wallet`：按预付钱包填 `known`、`Left`，并把最早批次当作 `Soon`/`Lapse`（trace 的 `due` 标 `expiry`）。于是「两天后过期的积分」排在「二十天后才刷新的周额度」之前，Raccoon 真的会被路由到；空余额按 100% 用尽处理 |
+| 其他路由 | 一律不额外问 sidecar：`order`/`usage`/`pace` 等保持原行为；`expiry` 继续走 §13.2 的 `Earliest` |
+| sidecar 关闭 / 读取失败 | `Wallet` 返回 unknown，账号仍按原 `smart` 规则排在已知之后（失败读就是 unknown） |
+
+- ✅ `go test ./internal/powermeterexpiry`（新增 `TestWalletByProvider`：余额/单位/到期、无余额卡片、折叠卡片、sidecar 关闭）
+- ✅ `go test ./internal/gateway -run 'TestSmartWeighsASidecarWallet|TestExpiryRouting|TestOnlyExpiryRouting'`（新增：smart 组里 Raccoon 排第一、trace 有 9000 credits、`order` 池不问 sidecar、sidecar 关闭回退为已知账号优先）
+
 ---
 
 ## 14. 上游源码归档（防上游删库）

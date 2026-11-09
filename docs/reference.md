@@ -1951,6 +1951,11 @@ each of these groups ordered by the share used.
   until its answers tell its week); any other unknown account goes after
   those known,
   and is still tried when they fail, ahead of any at 90% or more.
+  One whose plugin tells only a balance and no window (Raccoon's credits)
+  is known from the Balance board when the power-meter sidecar is on: what
+  it has left is weighed as a wallet's, and its soonest batch as the
+  renewal, so credits about to be lost go before a window renewing later.
+  With the sidecar off it stays unknown, as before.
   An account with a month beside its week (Factory) goes by its month:
   when the month holds less than its weeks add up to (Factory's, by
   one user's readings, about two weeks' worth), what a week leaves isn't

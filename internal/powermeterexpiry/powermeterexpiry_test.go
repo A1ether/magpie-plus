@@ -28,6 +28,11 @@ const summaryFixture = `{"providers":[
   "nextExpiryAt":"2099-12-31T15:59:59.000Z","credits":[{"amount":7,"expiresAt":"2099-11-30T00:00:00.000Z"}]},
  {"provider":"codearts","displayName":"CodeArts 华为云 · a1ether","accountId":"CodeArts 华为云 · a1ether",
   "nextExpiryAt":"2099-10-31T15:20:32.258Z","credits":[{"amount":0,"expiresAt":"2099-01-01T00:00:00.000Z"}]},
+ {"provider":"xiaohuanxiong","displayName":"商汤小浣熊 · RaccoonMadison","accountId":"商汤小浣熊 · RaccoonMadison",
+  "nextExpiryAt":"2099-11-08T15:59:59.000Z","balance":{"amount":9000,"currency":"CREDITS"},
+  "credits":[{"amount":1500,"expiresAt":"2099-11-08T15:59:59.000Z"},{"amount":7500,"expiresAt":null}]},
+ {"provider":"trae-global","displayName":"Trae 国际版 · A1ether","accountId":"Trae 国际版 · A1ether",
+  "balance":{"amount":0,"currency":"USD"},"credits":[]},
  {"provider":"a1etheropenai","displayName":"A1etherOpenAi","accountId":"",
   "entries":[{"id":"A1etherOpenAi · one"}],"credits":[]}
 ]}`
@@ -115,6 +120,47 @@ func TestEarliestByProvider(t *testing.T) {
 	}
 	if reads == 0 {
 		t.Fatal("the sidecar was never read")
+	}
+}
+
+// TestWalletByProvider: a card that tells a balance and no window (Raccoon's
+// credits) gives routing what the plugin left out — the figure left and when
+// its soonest batch runs out — under the provider's name and its one
+// account. A card with no balance tells none, and a folded card neither.
+func TestWalletByProvider(t *testing.T) {
+	reset(t)
+	var reads int
+	srv := sidecar(t, "tok", &reads)
+	SetSource(fakeSource{url: srv.URL, token: "tok", enabled: true})
+	Earliest("raccoon", "x")
+	await(t)
+
+	want := time.Date(2099, 11, 8, 15, 59, 59, 0, time.UTC)
+	left, unit, at, ok := Wallet("raccoon", "Raccoon-pu-01a175e1-f34a-7ad4-9f76-ce7bfe84260b")
+	if !ok || left != 9000 || unit != "credits" || !at.Equal(want) {
+		t.Fatalf("Wallet(raccoon) = %v %q %v, %v; want 9000 credits %v", left, unit, at, ok, want)
+	}
+	if _, _, _, ok := Wallet("qoder-cn", "A1ether"); ok {
+		t.Error("a card with no balance told one")
+	}
+	if _, _, _, ok := Wallet("a1ether", "some-key"); ok {
+		t.Error("a folded card told a wallet")
+	}
+	// a balance with no batch to expire is a wallet with no expiry, never an
+	// expiry at the zero time
+	if at, ok := Earliest("trae-global", "A1ether"); ok {
+		t.Errorf("a card with a balance alone told an expiry: %v", at)
+	}
+	if left, unit, at, ok := Wallet("trae-global", "A1ether"); !ok || left != 0 || unit != "usd" || !at.IsZero() {
+		t.Errorf("Wallet(trae-global) = %v %q %v, %v; want an empty usd wallet with no expiry", left, unit, at, ok)
+	}
+
+	// the sidecar off tells nothing, without asking
+	SetSource(fakeSource{url: srv.URL, token: "tok", enabled: false})
+	Earliest("raccoon", "x")
+	await(t)
+	if _, _, _, ok := Wallet("raccoon", "Raccoon-pu-01a175e1-f34a-7ad4-9f76-ce7bfe84260b"); ok {
+		t.Error("a sidecar off told a wallet")
 	}
 }
 
