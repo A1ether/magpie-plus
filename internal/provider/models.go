@@ -49,6 +49,10 @@ func (p Provider) Available() []catalog.Model {
 }
 
 func (p Provider) available() []catalog.Model {
+	if p.ListsOff() {
+		// the ids added by hand alone (Exposed)
+		return nil
+	}
 	signedIn := p.Account != nil && p.Account.models != nil
 	var known []catalog.Model
 	if signedIn {
@@ -188,7 +192,7 @@ func (p Provider) liveByID(model string) []catalog.Model {
 // lists says whether the provider's fetched list is its own to read: not
 // a plugin's, nor a preset's that lists nothing (Preset.NoList).
 func (p Provider) lists() bool {
-	if p.IsPlugin() {
+	if p.IsPlugin() || p.ListsOff() {
 		return false
 	}
 	pr := Preset(p.Preset)
@@ -196,6 +200,16 @@ func (p Provider) lists() bool {
 	// plans' own and the pay as you go's
 	return p.Account != nil || pr == nil || !pr.NoList || strings.TrimSpace(p.ModelsURL) != "" || p.listRegion(pr) || p.plansMixed()
 }
+
+// ListsOff is ListOff on a key's provider: a subscription's account and a
+// plugin's provider list their models as their sign-in does.
+func (p Provider) ListsOff() bool {
+	return p.ListOff && p.Account == nil && !p.IsPlugin()
+}
+
+// ErrListOff is what a Fetch of a provider whose list is off answers,
+// with no request made.
+var ErrListOff = errors.New("its model list is off: add each model by its id")
 
 // listsRead counts liveAll's reads (ListsRead).
 var listsRead atomic.Int64
@@ -237,7 +251,7 @@ var refreshEach = 8 * time.Second
 func RefreshLists(ctx context.Context) []Listed {
 	var out []Listed
 	for _, p := range All() {
-		if !p.Ready() || p.Off {
+		if !p.Ready() || p.Off || p.ListsOff() {
 			continue
 		}
 		c, cancel := context.WithTimeout(ctx, refreshEach)
@@ -428,6 +442,16 @@ func relistPicks(q *Provider, now map[string]bool) bool {
 // asked whether it serves its MCP router (noteRemoteHub).
 func (p Provider) fetch(ctx context.Context) ([]catalog.Model, error) {
 	ms, err := p.fetchList(ctx)
+	if err != nil && p.IsRemoteMagpie() {
+		// one that took another address on its network is asked there
+		// (remote_moved.go)
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), seekFor)
+		defer cancel()
+		if q, ok := SeekMoved(sctx, p, err); ok {
+			p, ctx = q, sctx
+			ms, err = p.fetchList(ctx)
+		}
+	}
 	if err == nil {
 		noteSelf(p, ms)
 		if len(ms) > 0 {
@@ -438,6 +462,9 @@ func (p Provider) fetch(ctx context.Context) ([]catalog.Model, error) {
 }
 
 func (p Provider) fetchList(ctx context.Context) ([]catalog.Model, error) {
+	if p.ListsOff() {
+		return nil, ErrListOff
+	}
 	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
 	if p.DecideOnly() {
 		return p.fetchDecide(ctx)
@@ -515,6 +542,9 @@ func (p Provider) List(ctx context.Context) ([]catalog.Model, error) {
 // ListAll is List with the models served on an API of their own kept:
 // embedding and rerank models, tagged Serves.
 func (p Provider) ListAll(ctx context.Context) ([]catalog.Model, error) {
+	if p.ListsOff() {
+		return nil, ErrListOff
+	}
 	ctx = p.ownRequests(p.Via(ctx), probelog.KindList)
 	if pr := Preset(p.Preset); pr != nil && pr.NoList && strings.TrimSpace(p.ModelsURL) == "" && !p.listRegion(pr) {
 		// with its embedding and rerank models, marked so (Voyage AI's)
@@ -546,7 +576,7 @@ func (p Provider) ListAll(ctx context.Context) ([]catalog.Model, error) {
 // of a key resting after an outage, to tell whether it is back
 // (gateway/rest_probe.go).
 func (p Provider) ListAsks() bool {
-	if p.Account != nil || p.DecideOnly() {
+	if p.Account != nil || p.DecideOnly() || p.ListsOff() {
 		return false
 	}
 	pr := Preset(p.Preset)
@@ -2013,8 +2043,11 @@ func userPrice(s settings.Settings, p Provider, model string) (catalog.Price, bo
 	for _, key := range [...]string{p.ID + "/" + model, p.ID + "/*", AnyPriceKey(model)} {
 		if m, ok := s.ModelPrices[key]; ok {
 			if pr, bad := m.Price(); bad == "" {
-				// a Claude model's 1-hour cache write left out: 2× input
-				catalog.OneHourFor(model, &pr)
+				// a Claude model's 1-hour cache write left out: 2× input,
+				// but where Copilot bills it at the 5-minute price
+				if !p.cacheWritesAlike() {
+					catalog.OneHourFor(model, &pr)
+				}
 				return pr, true
 			}
 		}
@@ -2118,6 +2151,13 @@ func borrowedEfforts(id string) []string {
 	// claude-opus-5-5-high, grok-3-mini-fast; nianshou5 on Discord): the
 	// model's own levels, which the proxy fits a request's effort to
 	if base, ok := catalog.Unsuffixed(id); ok {
+		return borrowedEfforts(base)
+	}
+	// a dated snapshot of a known model, as OpenAI's own list names them
+	// and a relay passing it on does (gpt-6.1-sol-2026-09-29): the model's
+	// levels. Codex offered it low, medium and high alone, no xhigh, max
+	// or Ultra (maomao_00001 on Discord)
+	if base := datedSuffix.ReplaceAllString(id, ""); base != id && base != "" {
 		return borrowedEfforts(base)
 	}
 	return nil
@@ -2684,13 +2724,20 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 		if p.codexReviewFree(model) { // signed out since: still a ChatGPT sign-in's
 			return catalog.Price{}, true
 		}
-		if pr, ok := MakerPrice(model); ok {
+		pr, ok := MakerPrice(model)
+		if ok {
 			if k := p.PeakOf(model); k != "" {
 				pr.Peak = k
 			}
-			return pr, true
+		} else {
+			pr, ok = SamePriceIn(s, id, model)
 		}
-		return SamePriceIn(s, id, model)
+		// a call Copilot served before it was signed out is billed as
+		// Copilot bills it still
+		if ok && p.cacheWritesAlike() {
+			pr = withoutOneHour(pr)
+		}
+		return pr, ok
 	}
 	pr, ok := p.ListPrice(model)
 	if !ok {
@@ -2707,7 +2754,32 @@ func tariffOf(s settings.Settings, p Provider, known bool, model string) (catalo
 	if ok && p.PriceRate > 0 {
 		pr = pr.Times(p.PriceRate)
 	}
+	if ok && p.cacheWritesAlike() {
+		pr = withoutOneHour(pr)
+	}
 	return pr, ok
+}
+
+// cacheWritesAlike reports whether p bills a cache write at one price however
+// long it is kept. Copilot does: its copilot_usage counts a 1-hour write as
+// the cache_write a 5-minute one is, at the same price (#3435:
+// claude-opus-5.5's 15,671-token 1-hour write cost 7,844,300,000 nano-AIU,
+// $5 per million, where Anthropic's 2× input would be $8).
+func (p Provider) cacheWritesAlike() bool { return p.ID == "copilot" }
+
+// withoutOneHour is a price with no 1-hour cache write of its own, so an
+// hour's write is billed as a 5-minute one (catalog.Price.OneHour): the 2×
+// input catalog.OneHourFor gave a Claude model's list price is Anthropic's,
+// not every vendor's. The tiers are copied, as they may be the catalog's.
+func withoutOneHour(pr catalog.Price) catalog.Price {
+	pr.CacheWrite1h = 0
+	if len(pr.Tiers) > 0 {
+		pr.Tiers = slices.Clone(pr.Tiers)
+		for i := range pr.Tiers {
+			pr.Tiers[i].CacheWrite1h = 0
+		}
+	}
+	return pr
 }
 
 // EntryPriceIn is what a call to an entry of the catalog costs the user,

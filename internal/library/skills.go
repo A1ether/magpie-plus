@@ -65,6 +65,9 @@ type Skill struct {
 	// Only the library keeps it, and a sync carries it; no agent is
 	// given it: the skill's folder is the agents', and this isn't in it.
 	Note string `json:"note,omitempty"`
+	// Router is "direct" for a skill the skill router leaves out: each
+	// agent keeps its own link of it (skill_router.go). A sync carries it.
+	Router string `json:"router,omitempty"`
 }
 
 // gives reports whether the agent id gets the skill on this computer: it
@@ -164,6 +167,11 @@ func skillDir(name string) string { return filepath.Join(skillsDir(), name) }
 type meta struct {
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description" json:"description"`
+	// Manual is its disable-model-invocation: Claude Code runs it only
+	// when the user types /name, never on the model's own (sunset3279 on
+	// Discord). False when the front matter doesn't parse, or the value
+	// isn't a bool: not known.
+	Manual bool `yaml:"disable-model-invocation" json:"-"`
 }
 
 func readMeta(dir string) (meta, bool) {
@@ -736,6 +744,12 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 		q, _ := rivals().rival(s.Name)
 		return q != ""
 	}
+	// the skills the router lists here (skill_router.go): no link of
+	// their own
+	routed := l.routedFor(t, sharers, cp, inShared)
+	if !t.Gone {
+		defer l.placeRouter(t, routed, a, res)
+	}
 	var mine []string
 	for _, name := range a.Skills {
 		s := l.skill(name)
@@ -744,7 +758,7 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 			mine = append(mine, name)
 			continue
 		}
-		if wanted(s) && !inShared(s) || !ours(p, name) {
+		if wanted(s) && !inShared(s) && !routed[name] || !ours(p, name) {
 			continue
 		}
 		if err := unlink(p); err != nil {
@@ -772,6 +786,9 @@ func (l *Library) syncSkills(t *Target, res *Result, all []*Target) {
 			if !slices.Contains(mine, s.Name) {
 				mine = append(mine, s.Name)
 			}
+			continue
+		}
+		if routed[s.Name] {
 			continue
 		}
 		// in a WSL distro, magpie's one copy there is what the agent's
@@ -941,6 +958,11 @@ type Candidate struct {
 	// As is the name the library has it by, or would add it by, when
 	// that isn't Name: another skill from elsewhere has that name
 	As string `json:"as,omitempty"`
+	// Links is that the library's skill by its name came from a folder
+	// or an agent, not from anywhere it can be updated from: installing
+	// this one puts its files and source in that one's place, so it
+	// updates from here (skill_link.go)
+	Links bool `json:"links,omitempty"`
 }
 
 // Probe is what was found at a source.
@@ -1427,8 +1449,10 @@ func probeSkills(input, name string) (*Probe, error) {
 				if s.Name != c.Name {
 					p.Candidates[i].As = s.Name
 				}
-			} else if l.skill(c.Name) != nil {
-				if p.src.remote() {
+			} else if s := l.skill(c.Name); s != nil {
+				if followsHere(s, p.src, from) {
+					p.Candidates[i].Links = true
+				} else if p.src.remote() {
 					p.Candidates[i].As = l.freeSkillName(c.Name, p.src)
 				} else {
 					// a folder of the user's isn't added beside it
@@ -1485,6 +1509,10 @@ func InstallSkills(input string, paths, agents []string) (*Result, error) {
 type installed struct {
 	added, had []string
 	skipped    []Problem
+	// linked are the skills the library had from a folder that follow the
+	// source now (skill_link.go), and kept those of them whose own files
+	// weren't the source's: they went to the backups
+	linked, kept []string
 }
 
 func (in *installed) skip(name string, err error) {
@@ -1501,13 +1529,14 @@ func installChange(f func(l *Library, in *installed) error) (*Result, error) {
 		if err := f(l, in); err != nil {
 			return err
 		}
-		if len(in.added) == 0 && len(in.had) == 0 && len(in.skipped) > 0 {
+		if len(in.added) == 0 && len(in.had) == 0 && len(in.linked) == 0 && len(in.skipped) > 0 {
 			return errors.New(in.skipped[0].Error)
 		}
 		return nil
 	})
 	if res != nil {
 		res.Installed, res.Had, res.Skipped = in.added, in.had, in.skipped
+		res.Linked, res.LinkedKept = in.linked, in.kept
 	}
 	return res, err
 }
@@ -1556,10 +1585,34 @@ func installFrom(l *Library, p *Probe, paths, agents []string, shown bool, in *i
 		// here; another by that name goes in beside it, by a name of its
 		// own (skill_beside.go)
 		if s := l.hadSkill(src, c, from); s != nil {
+			// one of the library's own by its name, the very same files,
+			// is that skill, and updates from there from now on (as
+			// noteFrom binds it when probed): another by that name from
+			// elsewhere goes in beside it, not in its place
+			if s.Source == nil && src.Kind == "github" && !linked(skillDir(s.Name)) {
+				if _, err := l.linkSkill(s, src, c.Path, from, nil); err != nil {
+					in.skip(c.Name, err)
+					continue
+				}
+			}
 			in.had = append(in.had, s.Name)
+			l.offered(p, c.Path, shown)
 			continue
 		}
 		name := c.Name
+		if s := l.skill(name); s != nil && followsHere(s, src, from) {
+			kept, err := l.linkSkill(s, src, c.Path, from, agents)
+			if err != nil {
+				in.skip(c.Name, err)
+				continue
+			}
+			in.linked = append(in.linked, name)
+			if kept {
+				in.kept = append(in.kept, name)
+			}
+			l.offered(p, c.Path, shown)
+			continue
+		}
 		if l.skill(name) != nil {
 			// the user's own folder is linked as it is, and its SKILL.md
 			// can't be named apart from the other: an agent would see two
@@ -1646,19 +1699,34 @@ func installFrom(l *Library, p *Probe, paths, agents []string, shown bool, in *i
 		}
 		if src.Kind == "github" {
 			sk.Hash, sk.Own = hashDir(dir), ownHash(dir)
-			// every skill the picker showed was offered: a check
-			// offers only those the repository adds later
-			l.seenAt(src.Repo, src.Ref, c.Path)
-			if shown {
-				for _, c := range p.Candidates {
-					l.seenAt(src.Repo, src.Ref, c.Path)
-				}
-			}
 		}
+		l.offered(p, c.Path, shown)
 		forgetCheck(name)
 		l.Skills = append(l.Skills, sk)
 	}
 	return nil
+}
+
+// offered records that the skill at path of a probe's source was offered,
+// and with shown every skill the picker listed: a check offers only those
+// the repository or folder adds later. A folder's key is also how the
+// library remembers which folder its linked skills were added from.
+func (l *Library) offered(p *Probe, path string, shown bool) {
+	var k string
+	switch p.src.Kind {
+	case "github", "git":
+		k = repoKey(p.src.Repo, p.src.Ref)
+	case "folder":
+		k = folderKey(p.root)
+	default:
+		return
+	}
+	l.seenAt(k, path)
+	if shown {
+		for _, c := range p.Candidates {
+			l.seenAt(k, c.Path)
+		}
+	}
 }
 
 // UpdateSkill fetches a skill from GitHub again, in place: the agents'
@@ -2250,6 +2318,8 @@ type FoundSkill struct {
 	// in, they get the library's in its place
 	Copies []string `json:"copies,omitempty"`
 	Link   string   `json:"link,omitempty"` // where it really is, when it's a link
+	// Manual: its SKILL.md sets disable-model-invocation (meta.Manual)
+	Manual bool `json:"manual,omitempty"`
 	// Shared is its entry in the user-wide ~/.agents/skills, when it is
 	// there; the agents that have it are those whose entry is a link (or a
 	// junction) to the very same folder
@@ -2295,7 +2365,9 @@ func foundSkills(l *Library) []FoundSkill {
 			f := byName[name]
 			// magpie's link to the library's folder is an agent having the
 			// one found there
-			if strings.HasPrefix(name, ".") || ours(p, name) && (f == nil || f.Library == "") || l.skill(name) != nil || !nameRe.MatchString(name) {
+			// and the skill router's entry is magpie's own (skill_router.go)
+			if strings.HasPrefix(name, ".") || ours(p, name) && (f == nil || f.Library == "") || l.skill(name) != nil || !nameRe.MatchString(name) ||
+				name == RouterSkill && routerOurs(p) {
 				continue
 			}
 			m, ok := readMeta(p)
@@ -2305,7 +2377,7 @@ func foundSkills(l *Library) []FoundSkill {
 			r := realDir(p)
 			switch {
 			case f == nil:
-				f = &FoundSkill{Name: name, Description: m.Description, Agents: []string{}, real: r, at: p}
+				f = &FoundSkill{Name: name, Description: m.Description, Manual: m.Manual, Agents: []string{}, real: r, at: p}
 				switch {
 				case pl.lib:
 					f.Library = p

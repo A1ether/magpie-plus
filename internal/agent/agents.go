@@ -270,6 +270,7 @@ func onMachine(home, cfg string) []*Agent {
 		copilot(home),
 		crush(home, cfg),
 		dsh(home),
+		dsbot(home),
 		reasonix(home),
 		commandCode(home),
 		fx(home),
@@ -305,12 +306,14 @@ func onMachine(home, cfg string) []*Agent {
 		raycast(home),
 		kiroCrew(home),
 		t3code(home),
+		openMausBot(home),
 		hanako(home),
 		atomcode(home),
 		snow(home),
 		alma(),
 		cindy(),
 		aionui(),
+		cherryStudio(home),
 		lody(home),
 	}, append(ompProfiles(home), qwenpawAgents(home)...)...)
 }
@@ -647,10 +650,12 @@ func magpieProviderJSONAt(shape, catalog, gw string) any {
 
 // piBlockKept is theirsKept for magpie's provider in a Pi models.json at
 // path, where a sendSessionAffinityHeaders the file already has, the
-// user's own or pi-cache-optimizer's (#1103), stays as it is.
+// user's own or pi-cache-optimizer's (#1103), stays as it is, as does a
+// model's maxTokens the user typed there (piOutputsKept).
 func piBlockKept(path string, value func() any) func() any {
 	return theirsKept(path, "providers."+magpieID, func() any {
 		v := value()
+		piOutputsKept(path, v)
 		if _, set := edit.GetJSON(path, "providers."+magpieID+".compat.sendSessionAffinityHeaders"); !set {
 			return v
 		}
@@ -673,10 +678,16 @@ func piBlockKept(path string, value func() any) func() any {
 // writes it under its name is magpie's: one the model has no longer, a
 // level gone or a fast mode lost, goes.
 //
-// A setCacheKey the file has already is the user's, false too (#5468).
+// A setCacheKey the file has already is the user's, false too (#5468), and
+// so is a model's limit.output they typed there (openCodeOutputsKept).
 func openCodeKept(path string, value func() any) func() any {
 	return theirsKept(path, "provider."+magpieID, func() any {
 		v := value()
+		if block, ok := v.(map[string]any); ok {
+			if ms, ok := block["models"].(orderedJSON); ok {
+				openCodeOutputsKept(path, ms)
+			}
+		}
 		if _, set := edit.GetJSON(path, "provider."+magpieID+".options.setCacheKey"); set {
 			v = withoutOption(v, "options", "setCacheKey")
 		}
@@ -860,7 +871,7 @@ func piModelJSON(m catalog.Model, gw string, native bool) map[string]any {
 		e["promptCache"] = c
 	} else if native && e["api"] == nil {
 		// a routing group has no api of its own (a Messages-only group stays
-		// on Chat, allResponses), and went out with no promptCache, which
+		// on Chat, provider.GroupAPI), and went out with no promptCache, which
 		// stops Pi's cacheWarming with "cache lifetime unavailable" (#5037)
 		// — while whatever Claude member it picks has the gateway's own
 		// translation marking the request ephemeral for five minutes

@@ -83,7 +83,9 @@ type QuotaWindow struct {
 	// Credits is set on each window of a ChatGPT account that holds
 	// credits (has_credits with a balance left, or unlimited): using the
 	// window up doesn't stop it, the vendor spends the credits instead
-	// (codexGoesOnCredits). Routing reads it (Allowance.OnCredits); kept
+	// (codexGoesOnCredits); and on each of a Kimi Code key's while its
+	// booster holds money (kimiBooster). Routing reads it
+	// (Allowance.OnCredits); kept
 	// with the reading, so one shown from before still says it.
 	Credits bool `json:"credits,omitempty"`
 	// Capped is set, for the GUI only (WithCapped), on a window an
@@ -166,6 +168,10 @@ type SubscriptionQuota struct {
 	// BalanceTrend is the Balance over time, as magpie read it, and when
 	// it runs out at that pace (balance_history.go)
 	BalanceTrend *BalanceTrend `json:"balanceTrend,omitempty"`
+	// Estimate is set when the Balance is one the user typed less what
+	// magpie priced the key's calls at since (key_balance_own.go), not a
+	// vendor's reading
+	Estimate *BalanceEstimate `json:"estimate,omitempty"`
 	// SharedBalance is set on each key of a provider found to read one
 	// account's balance with others (balance_shared.go): the name of the
 	// first of them, whose card shows it once for all
@@ -234,6 +240,11 @@ type SubscriptionQuota struct {
 	// From is the remote magpie a card is that one's (remote_quotas.go),
 	// by its name here; "" for this computer's own.
 	From string `json:"from,omitempty"`
+	// Via is the magpies (catalog.Self) a card told another magpie
+	// passed through, the one that read it first, this one last
+	// (CachedCards): the receiver leaves out a card that comes back to
+	// it (catalog.Loops). Only between magpies; nil here.
+	Via []string `json:"via,omitempty"`
 	// LastServedAt is when the account, plan or key last answered a
 	// request through this computer's gateway, nil when it hasn't in the
 	// last 30 days (served.go); set by Quotas, never cached.
@@ -332,7 +343,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 		}
 		readCtx, seq := quotaReading(bg)
 		asked := claudeAskGeneration.Load()
-		go func() {
+		goRead(func() {
 			out := fetchSubscriptionUsage(readCtx)
 			noteDailyCredits(out, time.Now())
 			noteCardHistory(out, time.Now())
@@ -347,7 +358,7 @@ func SubscriptionUsage(ctx context.Context) []SubscriptionQuota {
 			// has it finished, hook and all
 			toldUsage()
 			close(done)
-		}()
+		})
 	}
 	pending := c.pending
 	c.Unlock()
@@ -616,7 +627,7 @@ func accountJSON(ctx context.Context, url, token string, headers map[string]stri
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := Keyed(http.DefaultClient).Do(req)
 	if err != nil {
 		return err
 	}
@@ -1301,7 +1312,7 @@ func copilotSubscriptionUsage(ctx context.Context, githubToken, host string) Sub
 			req.Header.Set(k, v)
 		}
 		var res *http.Response
-		res, err = http.DefaultClient.Do(req)
+		res, err = Keyed(http.DefaultClient).Do(req)
 		if err == nil {
 			defer res.Body.Close()
 			b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))

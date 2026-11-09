@@ -19,7 +19,8 @@ import (
 // conversations, on the Sessions and Usage pages, read where the app keeps
 // them whether or not it reached magpie's gateway (#2190, yygutn; xxooioo
 // on Discord). The app keeps each conversation as a SQLite database,
-// ~/.gemini/antigravity/conversations/<conversation id>.db, written in WAL
+// ~/.gemini/antigravity/conversations/<conversation id>.db (Insiders uses
+// ~/.gemini/antigravity-insiders/conversations), written in WAL
 // mode while it runs. Its messages are encrypted at rest; the figures read
 // here are not. As Antigravity 2.23.0 on macOS writes them (yygutn's real
 // rows on #2190; the app isn't installed on any machine magpie is tried on):
@@ -47,6 +48,16 @@ import (
 // time as an agy step is (usage's agyGateway: the app sends no session
 // header).
 //
+// What the app calls a conversation is its row of
+// conversation_summaries.db beside conversations/, the database agy keeps
+// (agy.go): the app's language server is agy's, and Antigravity 2.29.0's
+// makes the same table in ~/.gemini/antigravity on its first start. title
+// is the name the app gives it, preview what it lists the conversation as
+// before that (the user's own words), and workspace_uris the folders open
+// when it was started, the first local one its folder on the Sessions page
+// (agyFolder). Without the row, the steps' text being encrypted, a
+// conversation has no name and no folder (xxooioo on Discord).
+//
 // A session is listed read only: the app has no command to pick a
 // conversation up again from a terminal.
 
@@ -57,22 +68,41 @@ func AntigravityAppDir() string {
 	return filepath.Join(home, ".gemini", "antigravity")
 }
 
+// AntigravityInsidersDir is the Insiders app's separate data folder.
+func AntigravityInsidersDir() string {
+	return filepath.Join(filepath.Dir(AntigravityAppDir()), "antigravity-insiders")
+}
+
 // antigravityConversations is the folder of the app's conversation databases.
 func antigravityConversations() string {
 	return filepath.Join(AntigravityAppDir(), "conversations")
 }
 
-// antigravityFiles are the app's conversations, one database a session.
-func antigravityFiles() []file { return antigravityFilesIn(antigravityConversations()) }
+// antigravityFiles are stable and Insiders' conversations. Insiders' ids
+// have their own prefix so a UUID present in both stores is two sessions
+// with separate summaries and call ids. Stable's existing ids stay the same.
+func antigravityFiles() []file {
+	out := antigravityFilesIn(antigravityConversations())
+	insiders := antigravityFilesIn(filepath.Join(AntigravityInsidersDir(), "conversations"))
+	for i := range insiders {
+		insiders[i].key = "antigravity:insiders-" + strings.TrimPrefix(insiders[i].key, "antigravity:")
+	}
+	return append(out, insiders...)
+}
 
 // antigravityFilesIn are the conversation databases in dir. A file's size
 // and time are the database's and its write-ahead log's together, so a
-// write that is in the log alone still reads the conversation again.
+// write that is in the log alone still reads the conversation again; rev
+// is its summary row, so a title the app gives it later does too.
 func antigravityFilesIn(dir string) []file {
 	if !Reads("antigravity") {
 		return nil
 	}
 	entries, _ := os.ReadDir(dir)
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := agySummariesOf(filepath.Dir(dir))
 	var out []file
 	for _, e := range entries {
 		id, ok := strings.CutSuffix(e.Name(), ".db")
@@ -88,6 +118,10 @@ func antigravityFilesIn(dir string) []file {
 			if fi.ModTime().After(f.mod) {
 				f.mod = fi.ModTime()
 			}
+		}
+		if r, ok := rows[id]; ok {
+			m := f.w()
+			m.agy, m.rev = &r, agyRev(r)
 		}
 		out = append(out, f)
 	}
@@ -235,17 +269,34 @@ func agAppModel(b []byte) string {
 	})
 	for _, m := range named {
 		if m != "" && len(m) <= 200 {
-			// Google names the deployment serving gemini-3.8-flash
-			// "gemini-3.8-flash-n", an id no request can ask for (the
-			// owner's real Antigravity account, b2432754e): it is that
-			// model, at its price
-			if base, ok := strings.CutSuffix(m, "-n"); ok && strings.HasPrefix(base, "gemini-") {
+			if base, ok := GeminiDeployment(m); ok {
 				return base
 			}
 			return m
 		}
 	}
 	return ""
+}
+
+// GeminiDeployment is the Gemini model a Google deployment's name stands
+// for, and whether m is such a name: a gemini-* id with one letter after
+// its last hyphen. Google names the deployment serving gemini-3.8-flash
+// "gemini-3.8-flash-n" (the owner's real Antigravity account, b2432754e)
+// and the one serving gemini-4-argon "gemini-4-argon-d" (oioio's
+// Antigravity database, 11-06): ids no request can ask for, which are that
+// model, at its price. No Gemini model's own id ends in a lone letter
+// (-lite, -nano, -pro, -001 and -exp are longer), and other makers' ids
+// are left as written.
+func GeminiDeployment(m string) (string, bool) {
+	i := strings.LastIndexByte(m, '-')
+	if i < 0 || len(m)-i != 2 || m[i+1] < 'a' || m[i+1] > 'z' {
+		return m, false
+	}
+	base := m[:i]
+	if !strings.HasPrefix(base, "gemini-") || len(base) == len("gemini-") {
+		return m, false
+	}
+	return base, true
 }
 
 // pbTime is a google.protobuf.Timestamp, zero when it has no seconds.
@@ -316,7 +367,10 @@ func parseAntigravity(f file) *state {
 	if err != nil {
 		return &state{}
 	}
-	s := &state{Size: f.size, Mod: f.mod.UnixNano()}
+	s := &state{Size: f.size, Mod: f.mod.UnixNano(), DBRevision: f.m().rev}
+	if r := f.m().agy; r != nil {
+		s.Named, s.Title, s.Cwd = title(r.Title), title(r.Preview), r.Cwd
+	}
 	for _, c := range calls {
 		s.saw(c.at, true)
 		s.use(dateOf(c.at), agAppModelOr(c.model), c.tokens)

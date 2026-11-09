@@ -52,6 +52,16 @@ var evalCases = []evalCase{
 		Keep: []evalValue{{V: "logo@3x.png", Kind: "EMAIL"}, {V: "intro@2x.mp4", Kind: "EMAIL"}},
 	},
 	{
+		ID: "hex-addresses", From: "TakaNaShi_ShiKi on X",
+		Text: "## 逆向笔记\n\n| 名称 | 地址 | 备注 |\n|---|---|---|\n| 校验函数 | `0x004EA5E0` | 比较输入的注册码 |\n| 密钥表 | `0x0058C210` | 16 字节 |\n| 解密 | `0x004EB120` | XOR |",
+		Keep: []evalValue{{V: "0x004EA5E0", Kind: "SECRET"}, {V: "0x0058C210", Kind: "SECRET"}, {V: "0x004EB120", Kind: "SECRET"}},
+	},
+	{
+		ID: "hex-addresses-en", From: "TakaNaShi_ShiKi on X",
+		Text: "The license check is at `0x004EA5E0`; the key table at `0x0058C210`.",
+		Keep: []evalValue{{V: "0x004EA5E0", Kind: "ACCOUNT"}, {V: "0x0058C210", Kind: "ACCOUNT"}},
+	},
+	{
 		ID: "url-userinfo", From: "#3538",
 		Text: "DATABASE_URL=postgres://app:hunter2pass@db.acme-corp.cn:5432/orders",
 		Mask: []evalValue{{V: "hunter2pass", Kind: "SECRET"}},
@@ -314,9 +324,11 @@ var evalCases = []evalCase{
 		Keep: []evalValue{{V: "Cicada", Kind: "PERSON"}, {V: "Mimi", Kind: "PERSON"}, {V: "Phosphor", Kind: "PERSON"}, {V: "Parakeet", Kind: "PERSON"}, {V: "Muesli", Kind: "PERSON"}},
 	},
 	{
+		// a word alone says nothing whose, and may be a person's
+		// ("Rina"): what the model takes for a name is masked (#5506)
 		ID: "app-alone", From: "ylorn.",
 		Text: "Muesli",
-		Keep: []evalValue{{V: "Muesli", Kind: "PERSON"}},
+		Keep: []evalValue{{V: "Muesli", Kind: "PERSON", Known: "#5506"}},
 	},
 	{
 		ID: "app-markdown", From: "ylorn.",

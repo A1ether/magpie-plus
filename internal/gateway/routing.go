@@ -1042,6 +1042,33 @@ func verifyHeld(c candidate) (string, bool) {
 	return r.said, true
 }
 
+// restrictedHeld is the refusal to give again, without asking, and its
+// status, for a candidate resting as one its vendor restricted
+// (failRestricted), while it rests: whole, or its model alone where that
+// is how it rests (a Remote magpie's model). Left the last one, it was
+// asked by every request all the same, as restLast and probeOne keep one
+// resting member for a request to get a real answer, and refused by every
+// one (leowang on Discord: two Antigravity accounts Google had suspended,
+// 23 and 22 tries, none answered, while the rest was meant to cost one
+// refused request each per restrictedRest). The refusal is the answer:
+// no wait mends it, and the vendor's risk control counts each request
+// against the account. Its rest ending, or lifted on the Routing page,
+// it is asked again.
+func restrictedHeld(c candidate) (int, string, bool) {
+	r, ok := restOf(c.restKey())
+	if !ok && c.restID() != c.restKey() {
+		r, ok = restOf(c.restID())
+	}
+	if !ok || r.Why != failRestricted || r.said == "" {
+		return 0, "", false
+	}
+	status := r.Status
+	if status < 400 {
+		status = http.StatusForbidden
+	}
+	return status, r.said, true
+}
+
 // resetsIn is how long until a used-up ChatGPT account is back, as its
 // refusal says: {"error":{"type":"usage_limit_reached","resets_at":<unix>,
 // "resets_in_seconds":<n>}}. Zero when it doesn't say.
@@ -1356,6 +1383,12 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// request is asked again, and no rest and no failure counted (#2873)
 		return Rest{Why: why, Status: status, By: "off", Until: now}
 	}
+	if c.p.PassesErrors() {
+		// the user leaves its errors to the client (errors=pass): none of
+		// its keys is set aside for one, and the next request is asked
+		// as this one was
+		return Rest{Why: why, Status: status, By: "off", Until: now}
+	}
 	if header.Get(zdrHeader) != "" || zdrRefused(status, body) {
 		// Command Code's Zero Data Retention setting refused the request:
 		// the model and the account are as good as they were, and answer
@@ -1425,6 +1458,9 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	guessed := false
 	// a failure counted past the account's, for its model alone (below)
 	modelBackoff := false
+	// a failure rested by a full window that counts some models only
+	// (below): that model is out, not the account
+	windowModel := false
 	if why == failProxy {
 		// the account is as good as it was; the proxy is the user's to start
 		return r
@@ -1546,8 +1582,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 			}
 		}
 	case failRestricted:
-		// out until the vendor lifts it: an appeal, not a wait (#1849)
+		// out until the vendor lifts it: an appeal, not a wait (#1849).
+		// Its words, for restrictedHeld to give again while it rests
 		d, r.By = restrictedRest, "restricted"
+		r.said = provider.APIError(body, http.StatusText(status))
 	case failVerify:
 		d, r.By = verifyRest, "verify"
 		// the error as the agent was given it, and the link in it
@@ -1631,6 +1669,15 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 		// until its window reset (plugins#243, zygs1083-dotcom)
 		if t := c.full(now); !t.IsZero() && c.p.Account != nil && !unserved && status != http.StatusUnauthorized && status != http.StatusForbidden {
 			d, r.By, modelBackoff = min(t.Sub(now), longestQuota), "window", false
+			// and when every full window that counts the model counts
+			// some models only (Pooled), the model rests, not the
+			// account: its other models are still in theirs
+			// (plugins#817, zane668: ZCode's GLM-5.3 bucket spent, its
+			// "exceed quota limit" read as a reply that did not stream,
+			// rested the account a day, GLM-5.3-Flash's own bucket with
+			// 71% left with it). A window of the whole account full
+			// rests the account, as before
+			windowModel = c.pooled(now)
 		}
 	}
 	// an account is kept by the agent its usage is asked of: a plugin's
@@ -1663,7 +1710,7 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// a refusal that names its reset and points to the account's other
 	// models is the model's limit: the others still answer (WorkBuddy's
 	// "您也可以切换其他模型继续使用", #1669)
-	if pooled || unserved || modelBackoff || overloaded || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
+	if pooled || unserved || modelBackoff || windowModel || overloaded || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
 		id = c.restID()
 	}
 	// Cline's daily limit of one free model is that model's: its others,
@@ -1674,6 +1721,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	// a ZCode Start Plan trial entry ended or spent is that entry's: the
 	// account's GLM Coding Plan models still answer (#3661)
 	if why == failQuota && zcodeTrialRefused(c, status, body) {
+		id = c.restID()
+	}
+	// and so is its 3012: zcode.z.ai's, not the GLM Coding Plan's host's
+	if zcodeTrialRestricted(c, why) {
 		id = c.restID()
 	}
 	// a relay's 429 that names the model whose credentials cooled down is
@@ -1924,10 +1975,12 @@ func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPo
 // (usedShare), except In order: there an account at 98% is still tried in
 // its turn, and one that fails then isn't benched until its week renews
 // unless the vendor said it was out (#530). A Codex account that goes on
-// on its credits is never: a window used up doesn't stop it (onCredits).
+// on its credits is never: a window used up doesn't stop it (onCredits);
+// nor is a key whose vendor goes on past its windows on a balance it
+// holds (Kimi Code's booster, #5721).
 func (c candidate) full(now time.Time) time.Time {
 	a, _ := c.allowance()
-	if spendsCredits(c.p, a) {
+	if spendsCredits(c.p, a) || c.p.Account == nil && a.OnCredits() {
 		return time.Time{}
 	}
 	return a.Full(c.model, provider.SpentShareOf(c.p.Routing), now)
@@ -2193,9 +2246,12 @@ type left struct {
 	// (Allowance.Fullest), zero when not known
 	fullest time.Time
 	soon    []time.Time // renews as Smart ranks them (Allowance.Renewal)
-	lapse   time.Time   // when the soonest of what is left is lost (Allowance.Lapse)
-	pace    float64     // weekly pace: share of its week left per hour until it renews
-	due     time.Time   // when the window that pace went by renews; zero when not known
+	// unreached: how many of soon's windows Smart passes over, as they
+	// can't be used up before they renew any more (Allowance.Unreached)
+	unreached int
+	lapse     time.Time // when the soonest of what is left is lost (Allowance.Lapse)
+	pace      float64   // weekly pace: share of its week left per hour until it renews
+	due       time.Time // when the window that pace went by renews; zero when not known
 	// restarts: when an auto-used reset starts its windows again
 	// (Allowance.Restarts), zero when none will; dueRestart: due is that,
 	// sooner than the window renews by itself; dueExpiry: due is when
@@ -2312,7 +2368,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pc, due := a.Pace(c.model, now)
 			amt, of, unit := a.Count(c.model, now)
 			rs := a.Restarts(now)
-			l := left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), lapse: a.Lapse(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+			l := left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), unreached: a.Unreached(c.model, now), lapse: a.Lapse(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs), credits: spendsCredits(c.p, a)} // one not known counts as unused
 			l.dueExpiry = !l.dueRestart && !l.lapse.IsZero() && due.Equal(l.lapse)
 			l.weekLow = u >= lowShare && u < usedShare && a.CapUsed(c.model, now) < lowShare
@@ -2376,8 +2432,8 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pace = provider.FreshPace
 		}
 		seats[i] = routes.Seat{Key: c.rest, Account: c.p.Account != nil, Known: known, Learns: learns(c, wg.lefts),
-			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
-			Expires: expires[c.restKey()], Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c)}
+			Used: l.used, WeekLow: l.weekLow, Soon: l.soon, Unreached: l.unreached, Lapse: l.lapse, Pace: pace, Weight: keyWeight(c), Resting: resting(c), Tokens: routed.used[c.restKey()].now(now), Credits: l.credits, First: l.first,
+			Expires: expires[c.restKey()], Left: l.bal, LeftIn: l.balIn, Spent: spentRest(c), Lead: c.p.UseFirst}
 	}
 	routed.Unlock()
 	if st.ByExpiry {
