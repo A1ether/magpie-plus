@@ -144,7 +144,7 @@ func videoModel(t *testing.T) {
 	}
 }
 
-// Settings › Images' video model: a model that makes videos is saved, one
+// Settings › Models › Images' video model: a model that makes videos is saved, one
 // that doesn't (a chat model, or none such) is refused, and a save from
 // another row, which doesn't send it, keeps it.
 func TestVideoGenCheckedAndKept(t *testing.T) {
@@ -336,4 +336,26 @@ func TestReplyModelSaves(t *testing.T) {
 			t.Errorf("reset left replyModel %q", got)
 		}
 	})
+}
+
+// Put agents back when quitting: a save from a page that doesn't send
+// restoreOnQuit (the tray panel, or a page from before it) keeps it, and
+// one that sends it false turns it off.
+func TestRestoreOnQuitKeptUnlessSent(t *testing.T) {
+	cur := settings.Defaults()
+	cur.RestoreOnQuit = true
+	in, err := Merge([]byte(`{"theme":"dark"}`), cur, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.RestoreOnQuit {
+		t.Error("a save that didn't send restoreOnQuit turned it off")
+	}
+	in, err = Merge([]byte(`{"theme":"dark","restoreOnQuit":false}`), cur, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.RestoreOnQuit {
+		t.Error("restoreOnQuit sent false left it on")
+	}
 }

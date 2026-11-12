@@ -394,6 +394,13 @@ the key's field and its placeholder is the field's hint, while a way labelled
 only "API key" keeps "<name> API key"; the provider's own icon shows on its
 row. English and Chinese, Chromium and WebKit, with the API faked.
 
+`plugin-ask-ways.test.cjs` checks a moved subscription whose plugin's
+first way asks a question first (Kiro's sign-in methods): the question
+offers "Other ways to sign in…", which shows every way, the API key among
+them, and a later question doesn't; the plugin's labels, messages and hints
+show in the window's language when it gives them by language, else as
+written. English and Chinese, Chromium and WebKit, with the API faked.
+
 `plugin-market.test.cjs` checks the Plugins tab: Discover lists the
 suggested plugins in their two sections, a card installs its plugin and
 then offers its sign-in, which opens in the Providers add sheet; a search
@@ -717,6 +724,13 @@ I set" (自定义名称不带供应商) between Off and On, lit by `plainOwnName
 then it post `settings/plain-names` with `mode: "on"` and `mode: "own"`,
 neither click scrolls the page, the hint isn't cut short and the three fit
 the row at 900px and 560px. English and Chinese, Chromium and WebKit.
+
+`agent-suffix.test.cjs` checks an agent's own "Provider in model names" in
+its Details (KillTry27355 on X): it reads "As in Settings · Off" while every
+agent's is Off, On posts `settings/agent-suffix` with `{agent, mode: "on"}`
+and then reads On, the first item posts `mode: ""` back, an agent whose list
+takes no names of magpie's (noNames) has no such row, and the page doesn't
+scroll sideways at 1180px and 390px. Every language, Chromium and WebKit.
 
 `bare-ids.test.cjs` checks Settings › Network and sharing › "Model ids
 without the provider" (love1sbug on X): off by default, On posts
@@ -2410,6 +2424,20 @@ compare the same completed API state rather than a loading-order difference.
 
 ```sh
 node --test internal/gui/tests/mobile-web.test.cjs internal/gui/tests/old-webkit.test.cjs
+```
+
+`phone-no-sideways.test.cjs` (#4943) opens every top-level view, Usage's four
+tabs and Settings' tabs on an iPhone 13 in the dark theme, filled with long
+names (accounts, a group, sessions, model ids, 30 requests). The document and
+the open view are no wider than the phone, nothing runs past its sides outside
+a box that scrolls on its own, and no empty band is held sticky at the view's
+foot (bars of buttons held there are meant); the Requests table's stand-in
+scrollbar stays hidden on a touch screen.
+At 375px in all five languages and at 390 and 430 in English, Chromium and
+WebKit. `MAGPIE_ASSETS` points it at older assets to see it fail.
+
+```sh
+node --test internal/gui/tests/phone-no-sideways.test.cjs
 ```
 
 ## Routing request metrics

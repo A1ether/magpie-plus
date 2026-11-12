@@ -32,13 +32,23 @@ ifeq ($(shell go env GOOS),android)
   TAGS = nogui
 endif
 
-.PHONY: build cli install test test-ui app install-app icons release release-cli release-windows release-linux clean dev dev-once balance-board power-meter-build preview update update-upstream update-power-meter upstream-archive upstream-archive-check
+.PHONY: assets-pack build-release build cli install test test-ui app install-app icons release release-cli release-windows release-linux clean dev dev-once balance-board power-meter-build preview update update-upstream update-power-meter upstream-archive upstream-archive-check
+
+# A release build embeds the UI's files as one zip instead of the tree
+# (internal/gui/assets_packed.go): a Windows or Linux download is the raw
+# binary, and the scripts, styles and svgs are a quarter of their size packed.
+# The zip is not kept in git; every release target makes it first.
+assets-pack:
+	@go run ./build/assetpack internal/gui/assets internal/gui/assets.zip
 
 build:
 	go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
 cli:
 	CGO_ENABLED=0 go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o magpie .
+
+build-release: assets-pack
+	go build -tags "$(TAGS) packedassets" -trimpath -ldflags="$(LDFLAGS)" -o magpie .
 
 install:
 	go install -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" .
@@ -132,7 +142,8 @@ test-ui:
 # Info.plist names it (internal/gui/desktop.go's appName is the same name
 # for the window, the menu bar and the Mac's app menu). The program inside
 # keeps the name magpie: the magpie:// links and the terminal's magpie run
-# it.
+# it. The bundle is built from the tree's assets (build), not the packed
+# zip (build-release): a local bundle only needs to run here.
 APP = magpie plus.app
 
 app: build
@@ -185,17 +196,17 @@ icons:
 		--minimum-deployment-target 11.0 --app-icon AppIcon --output-partial-info-plist build/darwin/actool/partial.plist >/dev/null
 	@mv build/darwin/actool/Assets.car build/darwin/Assets.car && rm -rf build/darwin/actool
 
-release: clean build
+release: clean build-release
 	@mkdir -p dist
 	@cp magpie dist/magpie-$(shell go env GOOS)-$(shell go env GOARCH)
 	@$(MAKE) --no-print-directory release-cli
 
-release-cli:
+release-cli: assets-pack
 	@mkdir -p dist
 	@for t in $(TARGETS); do \
 		os=$${t%/*}; arch=$${t#*/}; ext=""; [ $$os = windows ] && ext=.exe; \
 		echo "  $$os/$$arch (cli)"; \
-		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -tags nogui -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-cli-$$os-$$arch$$ext . || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -tags "nogui packedassets" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-cli-$$os-$$arch$$ext . || exit 1; \
 	done
 
 # The desktop app for Windows: the system WebView2 needs no cgo, so both
@@ -208,25 +219,25 @@ release-cli:
 # commit in them every release wrote a new one though the launcher was the
 # same (TestLauncherSameAtEveryCommit).
 WINVER = $(shell echo $(VERSION) | sed -E 's/^v//; s/[^0-9.].*//')
-release-windows:
+release-windows: assets-pack
 	@mkdir -p dist
 	@go run github.com/tc-hib/go-winres@v0.3.3 make --in build/windows/winres.json --arch amd64,arm64 --out rsrc \
 		--file-version "$(or $(WINVER),0.0.0)" --product-version "$(or $(WINVER),0.0.0)"
 	@for arch in amd64 arm64; do \
 		echo "  windows/$$arch (app)"; \
 		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -trimpath -buildvcs=false -ldflags="-s -w" -o internal/update/launcher-$$arch.com ./internal/update/launcher || exit 1; \
-		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production,comlauncher -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
+		CGO_ENABLED=0 GOOS=windows GOARCH=$$arch go build -tags production,comlauncher,packedassets -trimpath -ldflags="$(LDFLAGS) -H windowsgui" -o dist/magpie-windows-$$arch.exe . || exit 1; \
 	done; rm -f rsrc_windows_*.syso internal/update/launcher-*.com
 
 # The desktop app for Linux links GTK 3 and WebKitGTK 4.1 through cgo, so it
 # is built natively, one arch per machine.
-release-linux:
+release-linux: assets-pack
 	@mkdir -p dist
 	@echo "  linux/$(shell go env GOARCH) (app)"
-	@go build -tags "$(TAGS)" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
+	@go build -tags "$(TAGS) packedassets" -trimpath -ldflags="$(LDFLAGS)" -o dist/magpie-linux-$(shell go env GOARCH) .
 
 clean:
-	rm -rf magpie magpie.exe magpie.app "magpie plus.app" dist rsrc_windows_*.syso internal/update/launcher-*.com
+	rm -rf magpie magpie.exe magpie.app "magpie plus.app" dist internal/gui/assets.zip rsrc_windows_*.syso internal/update/launcher-*.com
 
 # Development: the UI is served from internal/gui/assets and the window
 # reloads itself when a file there is saved. With fswatch installed, the

@@ -19,6 +19,9 @@ var trayZh = map[string]string{
 	"Quit magpie plus":                     "退出 magpie plus",
 	"Restart Now to Update":                "立即重启以更新",
 	"Restart Now to Update (%d in flight)": "立即重启以更新（%d 个进行中）",
+	// the gateway paused from the menu (gatewaypause.go)
+	"Pause Gateway":  "暂停网关",
+	"Resume Gateway": "恢复网关",
 	// the tray icon's tooltip (trayusage.go; yi_time on Discord)
 	"%s used":                             "已用 %s",
 	"%s left":                             "剩余 %s",
@@ -52,6 +55,9 @@ var trayZhTW = map[string]string{
 	"Quit magpie plus":                     "結束 magpie plus",
 	"Restart Now to Update":                "立即重新啟動以更新",
 	"Restart Now to Update (%d in flight)": "立即重新啟動以更新（%d 個進行中）",
+	// the gateway paused from the menu (gatewaypause.go)
+	"Pause Gateway":  "暫停閘道",
+	"Resume Gateway": "恢復閘道",
 	// the tray icon's tooltip (trayusage.go; yi_time on Discord)
 	"%s used":                             "已用 %s",
 	"%s left":                             "剩餘 %s",
@@ -85,6 +91,9 @@ var trayJa = map[string]string{
 	"Quit magpie plus":                     "magpie plus を終了",
 	"Restart Now to Update":                "今すぐ再起動してアップデート",
 	"Restart Now to Update (%d in flight)": "今すぐ再起動してアップデート（%d 件処理中）",
+	// the gateway paused from the menu (gatewaypause.go)
+	"Pause Gateway":  "ゲートウェイを一時停止",
+	"Resume Gateway": "ゲートウェイを再開",
 	// the tray icon's tooltip (trayusage.go; yi_time on Discord)
 	"%s used":                             "使用済み %s",
 	"%s left":                             "残り %s",
@@ -118,6 +127,9 @@ var trayDe = map[string]string{
 	"Quit magpie plus":                     "magpie plus beenden",
 	"Restart Now to Update":                "Jetzt neu starten und aktualisieren",
 	"Restart Now to Update (%d in flight)": "Jetzt neu starten und aktualisieren (%d laufend)",
+	// the gateway paused from the menu (gatewaypause.go)
+	"Pause Gateway":  "Zugangspunkt pausieren",
+	"Resume Gateway": "Zugangspunkt fortsetzen",
 	// the tray icon's tooltip (trayusage.go; yi_time on Discord)
 	"%s used":                             "%s verbraucht",
 	"%s left":                             "%s übrig",
@@ -206,20 +218,25 @@ func trayText(lang, key string, args ...any) string {
 	return fmt.Sprintf(key, args...)
 }
 
-// trayLabels are the tray menu's lines: open, version, restart and quit.
-type trayLabels struct{ open, version, restart, quit string }
+// trayLabels are the tray menu's lines: open, pause (the gateway's, or
+// its resume), version, restart and quit.
+type trayLabels struct{ open, pause, version, restart, quit string }
 
 // trayMenuLabels are the lines in the language; update is the version
-// waiting for a restart, if there is one.
-func trayMenuLabels(lang, version, update string) trayLabels {
+// waiting for a restart, if there is one; paused, the gateway is.
+func trayMenuLabels(lang, version, update string, paused bool) trayLabels {
 	l := trayLabels{
 		open:    trayText(lang, "Open magpie plus"),
+		pause:   trayText(lang, "Pause Gateway"),
 		version: trayText(lang, "Version %s", version),
 		restart: trayText(lang, "Restart to Update"),
 		quit:    trayText(lang, "Quit magpie plus"),
 	}
 	if update != "" {
 		l.restart = trayText(lang, "Restart to Update to %s", update)
+	}
+	if paused {
+		l.pause = trayText(lang, "Resume Gateway")
 	}
 	return l
 }

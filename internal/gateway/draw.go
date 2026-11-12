@@ -128,7 +128,7 @@ func drawerMissing(v string) string {
 
 // GroupDraws is whether the routing group ref ("group/<id>") has a member
 // that draws: a model among its provider's Drawers. Such a group may be
-// picked in Settings › Images, and draws on those members in its routing's
+// picked in Settings › Models › Images, and draws on those members in its routing's
 // order, moving on while one fails (drawingGroup, #2005).
 func GroupDraws(ref string) bool {
 	_, ms, ok := drawingMembers(ref)
@@ -224,6 +224,8 @@ func drawsFamily(p provider.Provider, id string) bool {
 		return strings.HasPrefix(id, grokDrawerFamily)
 	case drawsCodex(p):
 		return strings.HasPrefix(id, codexDrawerFamily)
+	case drawsMuse(p):
+		return strings.HasPrefix(id, "muse-image")
 	case p.Account == nil && p.Base(provider.Responses) != "" && strings.HasPrefix(id, codexDrawerFamily):
 		return slices.ContainsFunc(Drawers(p), func(m catalog.Model) bool {
 			return strings.HasPrefix(m.ID[strings.LastIndexByte(m.ID, '/')+1:], codexDrawerFamily)
@@ -277,7 +279,7 @@ func ListedDrawer(ref string) string {
 // an account's own list of models (#474), picked in the editor from the
 // chat models, can't name them, so it never bars one (heyiwei5 on X).
 func listsCantName(p provider.Provider) bool {
-	return drawsCodex(p) || drawsGrok(p) || drawsWorkBuddy(p)
+	return drawsCodex(p) || drawsGrok(p) || drawsMuse(p) || drawsWorkBuddy(p)
 }
 
 // codexDrawer is the image model Codex CLI asks a ChatGPT account for, the
@@ -306,6 +308,19 @@ func drawsCopilot(p provider.Provider) bool {
 	return p.Account != nil && p.Account.Agent == "copilot"
 }
 
+// museDrawer is Meta's image model (Muse Image), which the Muse Code
+// subscription's plans include and which draws on the Responses API, as
+// Meta's image generation page shows: model muse-image-1.0, the picture in
+// the answer's image_generation_call.
+const museDrawer = "muse-image-1.0"
+
+// drawsMuse is whether p is a Muse (Meta) subscription, a plugin's. The
+// plugin signs POST /responses only, so it draws on that, not on the
+// images endpoints.
+func drawsMuse(p provider.Provider) bool {
+	return p.Account != nil && p.PluginProvider() == "muse" && p.Base(provider.Responses) != ""
+}
+
 // drawsCodex is whether p is a ChatGPT account, which draws at its Codex
 // backend's images API.
 func drawsCodex(p provider.Provider) bool {
@@ -326,6 +341,9 @@ func Drawers(p provider.Provider) []catalog.Model { return DrawersOf(p, p.Availa
 func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Model {
 	if drawsWorkBuddy(p) {
 		return wbDrawers(p)
+	}
+	if drawsMuse(p) {
+		return []catalog.Model{{ID: museDrawer, Name: "Muse Image", Provider: p.ID}}
 	}
 	if drawsCodex(p) || drawsGrok(p) {
 		out := slices.Clone(codexDrawers)
@@ -373,7 +391,9 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 			if p.ModelKind(m.ID) == provider.KindVideo {
 				continue
 			}
-			if catalog.DrawsID(m.ID) && catalog.ImagesAPI(m.ID) && p.PluginOpenAICompatible(m.ID) ||
+			// or one the plugin says gives images alone, whatever its name
+			// (maonekone on Discord)
+			if (catalog.DrawsID(m.ID) && catalog.ImagesAPI(m.ID) || imagesOnly(m.OutputModalities)) && p.PluginOpenAICompatible(m.ID) ||
 				pluginDrawsGemini(p, m.ID) && (catalog.DrawsID(m.ID) || slices.Contains(m.OutputModalities, "image")) {
 				m.Provider = p.ID
 				out = append(out, m)
@@ -389,6 +409,10 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 		return nil
 	}
 	out := p.PlanDrawers()
+	if filmsMiniMax(p) {
+		// a MiniMax key's image-01 models, which no list names
+		out = append(out, minimaxDrawers(p)...)
+	}
 	have := make(map[string]bool, len(out))
 	for _, m := range out {
 		have[m.ID] = true
@@ -429,7 +453,7 @@ func DrawersOf(p provider.Provider, avail func() []catalog.Model) []catalog.Mode
 // (provider.HiddenDrawers, 321sssrt on X): the image models a list offers
 // to pick from and Automatic picks among. A request that names a hidden
 // one still draws with it (resolveDrawing reads Drawers), as does a
-// Settings › Images pick of one made before it was hidden.
+// Settings › Models › Images pick of one made before it was hidden.
 func OfferedDrawers(p provider.Provider) []catalog.Model {
 	ms := Drawers(p)
 	if len(p.HiddenDrawers) == 0 {
@@ -438,7 +462,7 @@ func OfferedDrawers(p provider.Provider) []catalog.Model {
 	return slices.DeleteFunc(slices.Clone(ms), func(m catalog.Model) bool { return p.DrawerHidden(m.ID) })
 }
 
-// DrawerHidden is whether ref (provider/model), a model Settings › Images
+// DrawerHidden is whether ref (provider/model), a model Settings › Models › Images
 // names, is one the user unticked in its provider's editor: it still draws,
 // and the Settings row says it is hidden. A ChatGPT account's other GPT
 // Image names stand for its one (ListedDrawer).
@@ -497,8 +521,8 @@ func AutoDrawer() string {
 			}
 			c := cand{ref: p.ID + "/" + m.ID, released: m.Released, cost: 1e9}
 			switch {
-			case drawsCodex(p), drawsGrok(p):
-				c.cost, c.priced = 0, true // a ChatGPT or Grok plan's images come with it
+			case drawsCodex(p), drawsGrok(p), drawsMuse(p):
+				c.cost, c.priced = 0, true // a ChatGPT, Grok or Muse plan's images come with it
 			case m.Price != nil:
 				c.cost, c.priced = m.Price.Input+m.Price.Output, true
 			}
@@ -674,7 +698,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 					fail(400, fmt.Sprintf("no model to draw with: the Image generation model picked in magpie's Settings, %q, isn't set up any more: pick another in Settings → Models → Image generation, or name one", v))
 					return
 				}
-				fail(400, "no model to draw with: pick one in magpie's Settings → Images → Image generation, or name one")
+				fail(400, "no model to draw with: pick one in magpie's Settings → Models → Images → Image generation, or name one")
 				return
 			}
 			d.Model, call.Model = m, m
@@ -682,7 +706,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		p, model, ok := s.drawingModel(r, d.Model)
 		if !ok {
 			if agentOf(r) == "codex" && !strings.Contains(d.Model, "/") {
-				fail(400, "no model to draw with: Codex's provider has no matching image model and magpie's Settings → Images → Image generation has none enabled")
+				fail(400, "no model to draw with: Codex's provider has no matching image model and magpie's Settings → Models → Images → Image generation has none enabled")
 				return
 			}
 			if off, isOff := provider.SwitchedOff(d.Model); isOff {
@@ -697,7 +721,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			r = heldByGroup(r, g) // held to the group's accounts, if it is
 		}
 		keyWho, keyHeld := keyHolds(r)
-		if keyHeld && named && (isGroup && !groupAllowed(keyWho, g, ms) || !isGroup && !modelAllowed(keyWho, p, model)) {
+		if named && (isGroup && !groupGiven(r, keyWho, keyHeld, g, ms) || keyHeld && !isGroup && !modelAllowed(keyWho, p, model)) {
 			fail(keyModelRefusal(w, keyWho, d.Model))
 			return
 		}
@@ -727,20 +751,24 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 				tries = t
 			}
 		}
-		var unmask func()
+		// masked unless every model it may be drawn on is a provider the
+		// user set to go unmasked (unmaskedMembers), as a chat's is
 		var hits maskHits
-		w, d.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, d.Prompt)
-		defer unmask()
-		// the fields passed on as they came are masked as the prompt is,
-		// as a video's are
-		if err == nil {
-			var extra maskHits
-			err = maskStrings(r.Context(), d.Extra, &extra)
-			hits.add(extra)
-		}
-		if err != nil {
-			fail(maskStatus(err), err.Error())
-			return
+		if !unmaskedMembers(tries) {
+			var unmask func()
+			w, d.Prompt, unmask, hits, err = redactedPromptHits(r.Context(), w, d.Prompt)
+			defer unmask()
+			// the fields passed on as they came are masked as the prompt is,
+			// as a video's are
+			if err == nil {
+				var extra maskHits
+				err = maskStrings(r.Context(), d.Extra, &extra)
+				hits.add(extra)
+			}
+			if err != nil {
+				fail(maskStatus(err), err.Error())
+				return
+			}
 		}
 		// the Routing page lists it as it does a chat, each account or
 		// member asked a try of its one route (sideRoute)
@@ -763,7 +791,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		)
 		for i, m := range tries {
 			call.Provider, model = m.Provider.ID, m.Model
-			drew, out, code, capBack, err = s.drawOnAccounts(ctx, r, m.Provider, m.Model, d)
+			drew, out, code, capBack, err = s.drawOnAccounts(ctx, memberOn(r, g, m), m.Provider, m.Model, d)
 			// a group's next member is asked as a chat's would be: while
 			// this one's vendor fails, is out of quota or doesn't serve the
 			// model; a refusal of the request itself is the request's
@@ -882,28 +910,30 @@ func (s *Server) drawingTries(g provider.Group, ms []provider.Member, keeps map[
 	if slices.ContainsFunc(ms, func(m provider.Member) bool { return makes(m.Provider, m.Model) }) {
 		ms = slices.DeleteFunc(slices.Clone(ms), func(m provider.Member) bool { return !makes(m.Provider, m.Model) })
 	}
-	byRef := map[string]provider.Member{}
-	for _, m := range ms {
-		if ref := m.Provider.ID + "/" + m.Model; byRef[ref].Model == "" {
-			byRef[ref] = m
-		}
-	}
+	// a member on an account of its own (EastonXvii on X) is one of its
+	// own beside the same model on another, or on any: each is asked once
 	var out []provider.Member
 	seen := map[string]bool{}
-	add := func(ref string) {
-		m, ok := byRef[ref]
-		if !ok || seen[ref] || keeps != nil && !keeps[ref] {
-			return
+	add := func(m provider.Member) bool {
+		ref := m.Provider.ID + "/" + m.Model
+		k := ref + provider.AccountMark + m.Account
+		if seen[k] || keeps != nil && !keeps[ref] {
+			return false
 		}
-		seen[ref] = true
+		seen[k] = true
 		out = append(out, m)
+		return true
 	}
 	cs, _ := s.planGroup(g.Live(), ms, provider.Chat)
 	for _, c := range cs {
-		add(c.p.ID + "/" + c.model)
+		for _, m := range ms {
+			if m.Provider.ID == c.p.ID && m.Model == c.model && memberHeld(c, m, g) == "" && add(m) {
+				break
+			}
+		}
 	}
 	for _, m := range ms {
-		add(m.Provider.ID + "/" + m.Model)
+		add(m)
 	}
 	return out
 }
@@ -1132,6 +1162,9 @@ func viaFor(p provider.Provider, model string) drawVia {
 		// another magpie's images API asks the model's vendor the way
 		// that model draws there
 		return viaImages
+	case drawsMiniMax(p, model):
+		// MiniMax's image_generation, which drawImages asks (rocbomb123 on X)
+		return viaImages
 	case isGoogle(p) && strings.Contains(strings.ToLower(model), "gemini"):
 		return viaGemini
 	case p.ModelKind(model) == provider.KindImage:
@@ -1145,10 +1178,21 @@ func viaFor(p provider.Provider, model string) drawVia {
 			return viaImages
 		}
 		return viaChat
-	case catalog.ImagesAPI(model):
+	case catalog.ImagesAPI(model), p.IsPlugin() && pluginImagesOnly(p, model):
 		return viaImages
 	}
 	return viaChat
+}
+
+// imagesOnly is whether a model's output modalities are images and no text.
+func imagesOnly(out []string) bool {
+	return slices.Contains(out, "image") && !slices.Contains(out, "text")
+}
+
+// pluginImagesOnly is whether p, a plugin, lists model as giving images
+// alone: it draws at the images API, as one named for it does.
+func pluginImagesOnly(p provider.Provider, model string) bool {
+	return slices.ContainsFunc(p.Available(), func(m catalog.Model) bool { return m.ID == model && imagesOnly(m.OutputModalities) })
 }
 
 // answersInImages is whether p's fetched list says model answers with images
@@ -1321,6 +1365,9 @@ func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d 
 	ctx = provider.WithModel(ctx, p.ID, model)
 	if drawsWorkBuddy(p) {
 		return s.drawWorkBuddy(ctx, p, model, d)
+	}
+	if drawsMuse(p) {
+		return s.drawMuse(ctx, p, model, d)
 	}
 	if drawsCodex(p) || drawsGrok(p) {
 		return s.drawImages(ctx, p, model, d)
@@ -1556,6 +1603,9 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	}
 	if dashScopeDraws(p, model) {
 		return s.drawDashScope(ctx, p, model, d)
+	}
+	if drawsMiniMax(p, model) {
+		return s.drawMiniMax(ctx, p, model, d)
 	}
 	base := strings.TrimRight(p.Base(provider.Chat), "/")
 	if base == "" {

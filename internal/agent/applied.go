@@ -62,12 +62,21 @@ func appliedSave(m map[string]applied) {
 	b, _ := json.MarshalIndent(m, "", "  ")
 	os.MkdirAll(filepath.Dir(appliedPath()), 0o755)
 	os.WriteFile(appliedPath(), b, 0o600)
+	filememo.Look(appliedPath())
 }
 
+// appliedOf is what magpie set on agent id. Every look at an agent's
+// drift asks it, for every agent a poll lists, so the file is parsed once
+// a change and the map is shared: callers only read it.
 func appliedOf(id string) applied {
 	appliedMu.Lock()
 	defer appliedMu.Unlock()
-	return appliedLoad()[id]
+	m, _ := filememo.Read("applied", appliedPath(), func(b []byte) (map[string]applied, error) {
+		out := map[string]applied{}
+		json.Unmarshal(b, &out)
+		return out, nil
+	})
+	return m[id]
 }
 
 // record keeps what a field reads after magpie set it; a field put back to
@@ -995,9 +1004,9 @@ func (a *Agent) reconnect(now map[string]string) (bool, error) {
 
 // lastJSONLTime reads the newest Unix timestamp (seconds or milliseconds)
 // under key in the last lines of a prompt log, passing over the lines whose
-// text (under textKey) is a slash command: those an agent answers itself.
-// Zero if there is none.
-func lastJSONLTime(path, key, textKey string) time.Time {
+// text (under textKey) is a slash command: those an agent answers itself,
+// and those skip, when given, says magpie's own. Zero if there is none.
+func lastJSONLTime(path, key, textKey string, skip func(map[string]json.RawMessage) bool) time.Time {
 	f, err := os.Open(path)
 	if err != nil {
 		return time.Time{}
@@ -1017,6 +1026,9 @@ func lastJSONLTime(path, key, textKey string) time.Time {
 		}
 		var text string
 		if json.Unmarshal(m[textKey], &text) == nil && strings.HasPrefix(strings.TrimSpace(text), "/") {
+			continue
+		}
+		if skip != nil && skip(m) {
 			continue
 		}
 		n, err := strconv.ParseInt(string(m[key]), 10, 64)

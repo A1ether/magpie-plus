@@ -635,7 +635,7 @@ func (s *Server) serveSystemOneBody(w http.ResponseWriter, r *http.Request, body
 	// request (fflake33 on Discord). One the user set not to serve the
 	// model is never asked; with every one so, the request is refused
 	cs, pl := s.decideKeys(p, model)
-	barred := len(cs) == 0 && len(pl.left) > 0 && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred })
+	barred := len(cs) == 0 && slices.ContainsFunc(pl.left, func(w Weighed) bool { return w.Barred }) && !slices.ContainsFunc(pl.left, func(w Weighed) bool { return !w.Barred && !w.StandIn })
 	// and held to some accounts (#905): the decision model's provider must
 	// have one the key may use and that is let serve the model, the call
 	// spend landing on it as any's, and only those are asked
@@ -755,17 +755,36 @@ func requestEffort(proto provider.Protocol, body []byte) string {
 }
 
 // outputConfigEffort is the effort an Anthropic request's output_config
-// names, whatever it asks of thinking; "" when it names none.
+// names, whatever it asks of thinking; "" when it names none. A request
+// whose own output_config names none but carries the level of its turns
+// (Claude Code's {role: "system"} message with an output_config, which a
+// relay may keep when it drops the request's own) is asked at the last
+// of them.
 func outputConfigEffort(body []byte) string {
 	var v struct {
 		OutputConfig struct {
 			Effort string `json:"effort"`
 		} `json:"output_config"`
+		Messages []struct {
+			OutputConfig *struct {
+				Effort string `json:"effort"`
+			} `json:"output_config"`
+		} `json:"messages"`
 	}
 	if decodeJSON(body, &v) != nil {
 		return ""
 	}
-	return effortOf(v.OutputConfig.Effort)
+	if e := effortOf(v.OutputConfig.Effort); e != "" {
+		return e
+	}
+	for i := len(v.Messages) - 1; i >= 0; i-- {
+		if oc := v.Messages[i].OutputConfig; oc != nil {
+			if e := effortOf(oc.Effort); e != "" {
+				return e
+			}
+		}
+	}
+	return ""
 }
 
 // sentEffort is the reasoning a request goes to model at: what it asks
