@@ -691,3 +691,33 @@ git subtree push --prefix third_party/power-meter power-meter main
 
 [docs/更新与发布流程.md](docs/更新与发布流程.md)：取两个上游 → 构建 →
 网页端预览确认 → 才构建桌面 App。
+
+## 16. 跟随上游的记录（2026-11-12）
+
+这一轮跟了上游 713 个提交（`b70563ec6`）加一个（`805e5c29a`），
+power-meter 的 subtree 也拉到它的 `main`（含 Flutter 重写前端）。
+
+**冲突面（6 个文件）**：
+
+| 文件 | 两侧各加了什么 | 怎么解 |
+|---|---|---|
+| `Makefile` | 上游的 `assets-pack`/`build-release`；fork 的 `magpie plus.app` 与 power-meter 的目标 | 目标都留；`app` 仍用 `build`（树里的资源），不用打包的 zip |
+| `internal/gateway/routing.go` | 上游的 `lazyre`；fork 的 `powermeterexpiry` | 两个 import 都留 |
+| `internal/gui/app.go` | 上游的托盘「暂停网关」；fork 的「余额看板」 | 两行都设 |
+| `internal/gui/traymenu.go`、`traymenu_test.go` | 上游给 `trayLabels` 加了 `pause`；fork 的菜单叫「magpie plus」 | fork 的措辞留着，把 `pause` 加在旁边 |
+| `internal/gui/core_budget_test.go` | 上游重新量了核心脚本的预算，降到 1,263,333 | 见下 |
+| `plugins/rotation/rotation.go` | 上游的 `Opens` 字段；fork 的 Sub 里有「到期优先」 | `Opens` 加上，Sub 保持 |
+
+**核心脚本预算**：上游在自己的头上量到 1,263,190（比它的上限低 143），
+fork 的「到期优先」路由给 `app.js` 加了 342 字节，核心因此是 1,263,532。
+预算按量到的数抬到 1,263,532 并在注释里写清依据；`app.js` 的预算不动
+（它量到 1,080,467，仍在上游给的上限之内）。
+
+**上游带来的新东西**（跟这次合并无关，二开没碰）：托盘里的「暂停/恢复网关」、
+插件的 `Opens` 字段、发布构建把 UI 打包成 zip。
+
+**本机红的分类**见 [docs/更新与发布流程.md](docs/更新与发布流程.md#测试)：
+5 条是本机环境（AppKit 窗口、系统代理、`::1`、Go 1.27 的 `encoding/json`），
+7 条是整套一起跑才红、单独跑全绿的负载抖动（合并前、合并后、上游自己的树
+都如此），二开没有带来新的红。
+
