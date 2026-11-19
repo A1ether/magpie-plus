@@ -161,6 +161,17 @@ func revealable(v *library.View) []string {
 	for _, s := range v.FoundSkills {
 		out = append(out, s.Link, s.Shared)
 	}
+	for _, s := range v.Subagents {
+		// the file it is kept in, to edit it in
+		if s.Path != "" {
+			out = append(out, s.Path)
+		}
+	}
+	for _, r := range v.Rules {
+		for _, f := range r.Files {
+			out = append(out, f)
+		}
+	}
 	for _, p := range v.Projects {
 		out = append(out, p.Dir)
 		for _, e := range p.Placed {
@@ -258,6 +269,31 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		p, err := library.ProbePlugins(in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, p)
+	})
+	// the subagents at an address: a repository, a folder in one, a file,
+	// a folder here (subagent_import.go); nothing is written
+	mux.HandleFunc("POST /api/library/subagents/probe", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct{ Source string }
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		p, err := library.ProbeSubagents(in.Source)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, p)
+	})
+	// the slash commands the agents here have of their own
+	// (command_import.go); nothing is written
+	mux.HandleFunc("POST /api/library/commands/probe", func(rw http.ResponseWriter, r *http.Request) {
+		p, err := library.ProbeCommands()
 		if err != nil {
 			fail(rw, err)
 			return
@@ -466,6 +502,30 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		}
 		writeJSON(rw, v)
 	})
+	// billion-context.json's settings the tab changes, with the models
+	// magpie can give its summaries; a change is written and every
+	// running billion-context asked to reload it
+	mux.HandleFunc("GET /api/library/bili/settings", func(rw http.ResponseWriter, r *http.Request) {
+		v, err := library.ReadBiliSettings()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, biliSettingsView{v, servedModels()})
+	})
+	mux.HandleFunc("POST /api/library/bili/settings", func(rw http.ResponseWriter, r *http.Request) {
+		var c library.BiliChange
+		if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+			fail(rw, err)
+			return
+		}
+		v, err := library.SetBiliSettings(c)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, biliSettingsView{v, servedModels()})
+	})
 	mux.HandleFunc("POST /api/library/bili/install", func(rw http.ResponseWriter, r *http.Request) {
 		v, err := library.InstallBili()
 		if err != nil {
@@ -539,7 +599,7 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, mcpSignInOpened{st, openError(w, st.URL)})
+		writeJSON(rw, openMCPSignIn(w, st))
 	})
 	mux.HandleFunc("GET /api/library/mcp-signin/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		st, ok := mcpauth.Progress(r.PathValue("id"))
@@ -663,12 +723,15 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			Env         library.EnvVar // a variable saved
 			// a subagent saved (#2283)
 			Subagent library.Subagent
+			Command  library.Command
+			Rule     library.Rule
 			Agent    string            // the agent whose own skill is in the library's way
 			App      string            // the app the MCP hub is added to (servers/hub-open)
 			Note     string            // what the MCP router says of itself (servers/hub-note), or a skill's note (skills/note)
 			ID       string            // a market server's, or a market skill's in its repository
 			Values   map[string]string // what a market server needs
 			Dir      string            // a project's folder
+			Instr    *string           `json:"instr"` // a project's own instructions (projects/instructions)
 			Copy     bool              // a project gets copies, not links
 			Keep     bool              // a project removed keeps what magpie put in it
 			On       bool              // every skill or server given to the agents, or taken from them
@@ -771,6 +834,22 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.SubagentAgentsSet(in.Name, in.Agents)
 		case "subagents/remove":
 			res, err = library.RemoveSubagents([]string{in.Name})
+		case "commands/save":
+			res, err = library.SaveCommand(in.Old, in.Command)
+		case "commands/agents":
+			res, err = library.CommandAgentsSet(in.Name, in.Agents)
+		case "commands/remove":
+			res, err = library.RemoveCommands([]string{in.Name})
+		case "rules/save":
+			res, err = library.SaveRule(in.Old, in.Rule)
+		case "rules/agents":
+			res, err = library.RuleAgentsSet(in.Name, in.Agents)
+		case "rules/remove":
+			res, err = library.RemoveRules([]string{in.Name})
+		case "commands/import":
+			res, err = library.ImportCommands(in.Paths)
+		case "subagents/import":
+			res, err = library.ImportSubagents(in.Source, in.Paths, in.Agents)
 		case "skills/install":
 			res, err = library.InstallSkills(in.Source, in.Paths, in.Agents)
 		case "skills/create":
@@ -832,6 +911,9 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 		case "skills/where":
 			// each agent's own folder, or ~/.agents/skills too (skills_shared.go)
 			res, err = library.SetSkillsWhere(in.How)
+		case "skills/auto-update":
+			// fetched again by themselves when changed there (skill_autoupdate.go)
+			res, err = library.SetAutoUpdateSkills(in.On)
 		case "skills/router":
 			// magpie's one skill listing the rest (skill_router.go)
 			res, err = library.SetSkillRouter(in.On)
@@ -852,6 +934,8 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ProjectSkill(in.Dir, in.Name, in.Agents)
 		case "projects/skills":
 			res, err = library.ProjectSkills(in.Dir, in.Names, in.Agents)
+		case "projects/subagents":
+			res, err = library.ProjectSubagents(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/server":
 			res, err = library.ProjectServer(in.Dir, in.Name, in.Agents)
 		case "projects/server-off":
@@ -861,6 +945,13 @@ func libraryRoutes(mux *http.ServeMux, w Windows) {
 			res, err = library.ProjectSkillsOff(in.Dir, oneOrMore(in.Name, in.Names), in.Agents)
 		case "projects/copy":
 			res, err = library.ProjectCopy(in.Dir, in.Copy)
+		case "projects/instructions":
+			// the text, the agents (sent as [] for none), or both
+			c := library.ProjectInstr{Text: in.Instr}
+			if in.Agents != nil {
+				c.Agents = &in.Agents
+			}
+			res, err = library.ProjectInstructions(in.Dir, c)
 		case "all/sync":
 			res, err = library.Sync()
 		default:
@@ -896,4 +987,11 @@ func oneOrMore(name string, names []string) []string {
 		return names
 	}
 	return []string{name}
+}
+
+// biliSettingsView is billion-context.json's settings with the models
+// the tab's picker offers
+type biliSettingsView struct {
+	*library.BiliSettings
+	Models []modelRef `json:"models"`
 }

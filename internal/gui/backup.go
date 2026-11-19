@@ -28,6 +28,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			Keys    bool
 			Library *bool // nil is yes
 			Memory  *bool // nil is yes
+			Usage   *bool // nil is yes: the usage history
 			SignIns bool  // the subscriptions' and plugins' sign-ins too
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -44,6 +45,12 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		}
 		if in.Memory != nil && !*in.Memory {
 			b.Memory = nil
+		}
+		if in.Usage == nil || *in.Usage {
+			if err := backup.WithUsage(&b); err != nil {
+				fail(rw, fmt.Errorf("the usage history couldn't be read, so no backup was made: %w", err))
+				return
+			}
 		}
 		if in.SignIns {
 			if err := backup.WithSignIns(&b); err != nil {
@@ -70,7 +77,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		}
 		os.Chmod(name, 0o600)
 		_ = w.OpenFolder(dir) // saved either way; the path is in the answer
-		writeJSON(rw, map[string]any{"path": tilde(name), "providers": len(b.Providers), "profiles": len(b.Profiles), "agents": len(b.Agents), "library": b.Library != nil, "signIns": signInCount(b.SignIns)})
+		writeJSON(rw, map[string]any{"path": tilde(name), "providers": len(b.Providers), "profiles": len(b.Profiles), "agents": len(b.Agents), "library": b.Library != nil, "signIns": signInCount(b.SignIns), "usage": usageCount(b.Usage)})
 	})
 	mux.HandleFunc("POST /api/backup/import", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -79,6 +86,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			Agents  bool
 			Library *bool // nil is yes
 			Memory  *bool // nil is yes: merged with the memories here
+			Usage   *bool // nil is yes: merged with the usage history here
 			SignIns *bool // nil is yes: the backup's sign-ins, when it has them
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -100,6 +108,7 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 		parts.Library = in.Library == nil || *in.Library
 		parts.Memory = in.Memory == nil || *in.Memory
 		parts.SignIns = in.SignIns == nil || *in.SignIns
+		parts.Usage = in.Usage == nil || *in.Usage
 		res, err := backup.Restore(b, parts)
 		if err != nil {
 			fail(rw, err)
@@ -215,6 +224,43 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			err = busy(davsync.SyncNow(ctx)) // how it went is in the status
 		case "now":
 			err = busy(davsync.SyncNow(ctx))
+		case "preview": // what syncing would do (#6428): the setup saved, or the form's when one is sent
+			var in struct{ Form *davsync.Config }
+			var p davsync.Plan
+			if err = json.NewDecoder(r.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+				fail(rw, err)
+				return
+			}
+			if in.Form != nil {
+				p, err = davsync.PreviewWith(ctx, *in.Form)
+			} else {
+				p, err = davsync.Preview(ctx)
+			}
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, p)
+			return
+		case "sync-previewed": // the sync a preview showed, nothing else
+			var in struct{ Token string }
+			if err = json.NewDecoder(r.Body).Decode(&in); err == nil {
+				if err = davsync.SyncPreviewed(ctx, in.Token); !errors.Is(err, davsync.ErrPlanChanged) {
+					err = busy(err) // how it went is in the status
+				}
+			}
+		case "undo-sync": // the parts the last sync brought in, as they were before it
+			var in struct{ Force bool }
+			if err = json.NewDecoder(r.Body).Decode(&in); err == nil {
+				_, err = davsync.UndoSync(in.Force)
+			}
+			var since *davsync.ChangedSince
+			if errors.As(err, &since) { // the page asks before writing over them
+				rw.Header().Set("Content-Type", "application/json")
+				rw.WriteHeader(http.StatusConflict)
+				json.NewEncoder(rw).Encode(map[string]any{"error": err.Error(), "changed": since.Parts})
+				return
+			}
 		case "off":
 			err = davsync.Off()
 		case "dismiss":
@@ -241,6 +287,27 @@ func backupRoutes(mux *http.ServeMux, w Windows) {
 			err = busy(davsync.Follow(ctx))
 		case "reveal":
 			err = w.OpenFolder(filepath.Join(settings.Dir(), "sync"))
+		case "setup-text": // this setup as text sealed with its passphrase, to paste on another computer
+			text, err := davsync.SetupText()
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, map[string]string{"text": text})
+			return
+		case "setup-open": // a setup pasted from another computer, for the form: nothing is saved
+			var in struct{ Text, Passphrase string }
+			if err = json.NewDecoder(r.Body).Decode(&in); err != nil {
+				fail(rw, err)
+				return
+			}
+			s, err := davsync.OpenSetupText(in.Text, in.Passphrase)
+			if err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, s)
+			return
 		default:
 			http.NotFound(rw, r)
 			return
@@ -316,4 +383,12 @@ func signInCount(s *provider.SignIns) int {
 		return 0
 	}
 	return len(s.Logins) + len(s.Plugins)
+}
+
+// usageCount is how many calls a backup's usage history holds.
+func usageCount(u *backup.Usage) int {
+	if u == nil {
+		return 0
+	}
+	return u.Calls
 }

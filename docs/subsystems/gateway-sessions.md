@@ -90,7 +90,19 @@ header id of its own, and omp sends that id, not the main session's, in
 the gateway's `omp|<sub id>` is its own in the same places as Raft's `pi|`
 key, and is never a second session counted again (Jumy, Discord 10-30:
 `TestOmpSubagentsAreTheSessionsToTheGateway`,
-`TestOmpSubagentCountedOnceWithTheGateway`). A Claude Code session's
+`TestOmpSubagentCountedOnceWithTheGateway`). A Pi session stands for the
+subagents pi-subagents ran for it the same way: each runs as a Pi of its
+own, its file `<run id>/run-<n>/session.jsonl` (async and parallel runs a
+folder deeper) in the folder named for the lead's file, or under the
+`defaultSessionDir` of `extensions/subagent/config.json`, where its
+header's `parentSession` names the lead's file (`piFilesIn`,
+`piSubagentFiles` in [`pi.go`](../../internal/sessions/pi.go)). Its calls
+are the lead session's, on its own model and provider, and the lead's
+`subagent` tool result, which carries their usage summed, counts nothing
+once those files are read (`piSubagentsRead`). Before, a lead on magpie's
+entry left a DeepSeek subagent on no page: its files went unread and the
+sum went under the lead's model, the gateway's to count (nzvzbmz78932 on
+X, `TestPiSubagentCalls`). A Claude Code session's
 copies (`Copies`) are among its keys the same way. A ZCode session stands
 for its bare id too: a request names it by the id its database gives with
 a prefix stripped (`sess_…`, a subagent's `sess_subagent_agent_…`:
@@ -122,7 +134,8 @@ reads only the agent shown and the agents with gateway sessions (#2776).
 It answers before a first read of a long history (hey_boyce on X: the page
 stood on its placeholder rows on its first open). A file it would read whole
 (no parse kept, an older index, a file written over, or a Claude Code or
-Codex parse that can't be read on after a restart) is read behind the
+Codex parse that can't be read on after a restart because its window
+wasn't kept on disk) is read behind the
 answer once more than `quickBytes` (32 MB) of them is waiting; until then its
 row stands on the parse kept, or on a glance at its first 256 KB (id,
 folder, first prompt, start) and, for Claude Code, the titles in its last
@@ -132,6 +145,21 @@ glance is never saved in the index (`savable`) nor taken by a refresh as a
 parse (`parsed`). See
 [`internal/sessions/manage_quick.go`](../../internal/sessions/manage_quick.go),
 `TestManageAnswersBeforeFirstReads` and `sessions-pending-fill.test.cjs`.
+A file being written (changed within the hour, `workingRevision`) keeps
+what its reads have seen on disk with where they stopped, so after a
+restart the next line it gains is read on from there, not from its first
+line. A Claude Code session's is in `sessions.json` and its shard's `.rev`
+file (#3493). A Codex rollout's summary window goes in
+`codex-windows/<hash>.gob` beside `sessions.json`, written with it and
+taken away once the cache drops that window, and its calls' window
+(`cxRun`) in the shard's `.rev` file. Each names the parser and window
+versions it was written by, the size, offset and content hash of its read,
+and is taken only when all match. Before this, the first line a 100 MB
+rollout gained after a restart had it read whole twice, 2.2 s of the
+Sessions list on an M5 and over ten seconds on a slower Windows PC
+(shangyuan0818 on X). See
+[`internal/sessions/codex_window.go`](../../internal/sessions/codex_window.go)
+and `TestCodexSessionReadOnAfterRestart`.
 A Claude Code session's folder is its first line's `cwd`, unless
 Claude Code's `/cd` moved it: the file goes to the new folder's project
 directory with a `{"type":"relocated","relocatedCwd":…}` line, while the
@@ -267,6 +295,18 @@ call magpie had routed was counted again as a local session's whatever
 provider id ZCode wrote beside it (nori_tsukiji on X). Verification:
 `TestZCodeCallsPairWithTheGatewaysRecords`.
 
+The Claude subscription bridge's own Claude Code runs save their sessions
+in a Claude folder the readers list (the user's own, or a saved account's
+under `claude-accounts`), often in the caller's project. They aren't the
+user's: the gateway recorded each call under the agent that asked, and
+nothing paired the session file's call with that record, so every call was
+counted twice, once as "Claude Code · Local session" (iwinux on X). Their
+ids are the bridge's (`bridgesid`, see
+[the bridge](claude-subscription-bridge.md#the-runs-working-folder-clientworkdir)),
+and `listCCFiles` leaves such a session and its sub-agents' files out of
+every listing: calls, the ledger, the Sessions page, traces and WSL.
+Verification: `TestBridgeSessionsAreNotLocal`.
+
 A ZCode session's name is the app's: its task index
 (`v2/tasks-index.sqlite` in the data folder, `tasks.title` by `task_id`,
 the session's id) holds what the app shows and what the user renamed it to,
@@ -401,6 +441,20 @@ covers them), and `sessions/manage` carries the same as `reads`. While
 `asked` is false the Sessions page shows the consent (`consentCard` in
 the sessions plugin): each agent found with a switch, off; Allow selected
 saves `all: false` with each agent picked or not, Allow all `all: true`.
+A choice with `all` false reads no agent it doesn't name. An agent off
+and found here is `new` in `found` unless it was turned off on its own:
+a post without `all` that sets it `false` (Keep off, a Settings ›
+Privacy row, `magpie sessions read off <agent>`) records it in
+`sessionReads.kept`, and one that sets it `true` takes it out. So an
+agent found after the first choice, and one left off in that choice's
+list (Antigravity 2.0 beside agy CLI: baysonfox on X, whose app calls
+made without magpie were counted nowhere), are asked about once more:
+on the Sessions page (`laterCard`: Show their sessions sends each
+`true`, Keep off `false`) and above Usage › Requests' rows (`readsLater`
+in the usage plugin's `page.js`: Count / Don't count, the same posts).
+An agent turned off in Settings before `kept` existed has no entry and
+is asked once (`TestSessionReadsUncheckedAgentAskedAgain`,
+`TestSessionReadsTurnedOffNotAskedAgain`).
 Settings › Privacy, *Agents' session history* (`renderSessionReads` in
 the sessions plugin's `settings.js`), has *Agents found later* (`all`, sent with each listed agent
 at the value its row shows) and a row per agent.
@@ -464,6 +518,26 @@ Codex's newest rollout's last line before magpie restarts Codex
 `TestFreshInstallReadsNoAgentUntilAllowed`,
 `TestSettleReadsKeepsWhatWasThere`, `TestSessionReadsRoutes`,
 `sessions-reads.test.cjs`.
+
+LiveAgent's sessions (#6741,
+[`liveagent.go`](../../internal/sessions/liveagent.go)) are K-brain's
+`<root>/sessions/<project>/<id>/session.jsonl` (older ones right under
+`sessions`; `.runs` and `.deleted-history` are skipped), the root found by
+the rule `agent.liveAgentDir` uses (`sessions.LiveAgentDirIn`:
+`$LIVEAGENT_HOME`, `$K_BRAIN_HOME`, `~/.liveagent/data-dir.json`,
+`~/.liveagent`). K-brain rewrites the whole file, so it is parsed whole.
+Its first line, `session_meta`, gives the id, title, cwd and the running
+totals (`usage_in` with cache reads and writes in it, `usage_cached`,
+`usage_out`, `model_usage` by `"<model> @ <provider>"`); each reply's own
+`usage` counts on its day, and what the totals hold beyond those replies
+(a compaction's call, a rewound reply) plus `sub_usage` counts on the last
+message's day. A fork's copies (`seq` up to `fork_seq`) are its source's
+and count in neither. A subagent's session (`task-<parent>-<task>`,
+`task_id` set) is filed under its parent with its tools but no tokens:
+they are the parent's `sub_usage`. There is no Calls reader, as the
+gateway's own record of LiveAgent's calls carries no session, and no
+resume command or delete. Tests: `TestLiveAgentSessions` (the issue's
+literal `session_meta`), `TestLiveAgentTranscript`, `TestLiveAgentRoot`.
 
 ## Local Gateway Conversation Recording
 
@@ -594,6 +668,64 @@ Verification: `TestSearchSession*` (`TestSearchSessionReadsOnlyLinesWithTheWords
 for the line filter), `TestContainsFold`, `TestMayHoldSkipsAFileWithoutTheWords`,
 `TestGatewayTitleAndSearch`, `TestSessionsSearch*`; browser
 `sessions-search.test.cjs`.
+
+### What was said in every agent's sessions
+
+The same search over every agent at once (cryingLiu on X) can't read the
+files each query: this computer's Claude Code history alone is 29 GB in
+7,390 files. `sessions.SearchSaid` asks an index of the words said in them,
+`said-v1.db` beside `sessions.json`: an SQLite FTS5 table with no text kept,
+only which words are in which session (`content=''`, `detail='none'`; the
+user's and the model's text, about 1% of the bytes). It is made the first
+time a search asks, in the background, the newest sessions first, from the
+sessions `sessions.json` already lists (`saidSessions`), and brought up to
+date by the next search more than 10 s on (`saidStale`): a Claude Code or
+Codex file that grew is read from where the last read ended (`upto`, at a
+line's end), any other session again whole when its files changed, and a
+session gone or rewritten is dropped. A search waits for that at most 2 s
+(`saidWait`) and is otherwise answered from what is indexed, saying
+`indexed` of `total`; while the first listing of the sessions is still
+running (about 50 s over a 29 GB Claude Code and 60 GB Codex history with
+a cold `sessions.json`) it says `listing` instead, so neither the page nor
+the MCP server reads an empty first answer as "no session says it". Words are letter-or-digit runs matched by their start
+(`auth` finds `authentication`); Chinese, Japanese and Korean go as each
+two characters side by side (`saidWords`, `saidTerms`). The index only says
+which sessions are worth reading: those are read newest first with
+`SearchSession` for the hit and the words round it, to `limit` hits.
+An agent magpie may not read (`Reads`, Settings › Sessions and gateway
+mode) is left out of every answer at once and out of the index on its next
+update; turning gateway mode on or off closes the index (`Reset` →
+`ForgetSaid`, which stops a refresh running at the next session).
+
+- `GET /api/sessions/said?q=&agent=&limit=` is the Sessions page's: under
+  the agent's own list, the sessions of other agents that said the words
+  (Other agents), asked again every 3 s while the index is still reading.
+  The page asks nothing in gateway mode.
+- `GET /api/sessions/transcript?…&find=` reads the conversation from a few
+  messages before the first part that says the words (`TranscriptAt`,
+  `transcriptLead`), with `from` the parts left out. A hit, in the agent's
+  list or another's, opens the conversation sheet there: the part is ringed
+  (`sess-found`), its words marked with the CSS Custom Highlight API where
+  the browser has it, and the sheet, never the page, scrolled to it once.
+- The `magpie-sessions` MCP server (`SessionsMCPPath`,
+  `/mcp/magpie/sessions`, [`sessions_mcp.go`](../../internal/gateway/sessions_mcp.go))
+  gives an agent `search_sessions(query, agent?, limit)` and
+  `read_session(session, find?, from?, max_chars?)`, as text: each hit's
+  `agent:id`, title, folder, time and the words round it; a read numbers
+  each message, shortens tool calls and answers, leaves thinking out, and
+  says how to go on (`from=`). Like Magpie Memory it answers the agents on
+  this computer alone, never another computer's key or a web page. The
+  Library offers it as opt-in, run as `magpie mcp sessions`
+  (`browsermcp.RunSessions`).
+
+Implementation: [`internal/sessions/said_index.go`](../../internal/sessions/said_index.go),
+`TranscriptAt` in [`transcript.go`](../../internal/sessions/transcript.go),
+the `said` route in [`sessions_manage.go`](../../internal/gui/sessions_manage.go).
+Verification: `TestSearchSaid*` (`TestSearchSaidReadsAGrownFileFromWhereItEnded`,
+`TestSearchSaidLeavesOutAgentsNotRead`), `TestSaidWords`, `TestSaidTerms`,
+`TestTranscriptAtStartsBeforeTheHit`, `TestSessionsMCP*`,
+`TestSessionsServerInDiscover`, `TestGatewayModeListsNoOwnSessions`;
+browser `sessions-said.test.cjs`, `library-sessions-mcp.test.cjs`.
 
 Verification: `TestGatewayConversation*` (`TestGatewayConversationNeedsTheClientsSession`
 and `TestGatewayConversationClientRequestPrefixedSession` for the two rules above), `TestGatewaySessionHistoryAndCalendar`,
@@ -744,6 +876,28 @@ a large body shows as a burst. `TestTrafficCountsWhatRowsCount`,
 `TestUsageTrafficSaysWhatTheGatewayCounted` and `usage-traffic.test.cjs`
 cover it.
 
+What the bytes up were made of (theforeveriris on X: 8.6 GB up over 8169
+requests). Every request resends the whole conversation, so ~1 MB a request
+is a long context, not a leak. The prompt reader (`promptOf`, already run off
+the request path by `inspectPrompt`) adds each piece's length as it reads it
+into `Prompt.sent`: the system prompt (with skills and memory), the tools'
+definitions, images, and everything read (`all`). A tool result shared by the
+files it read counts once (`again`). `upParts` scales those to the bytes
+that went on the wire into the row's `UpParts`. A row gets none when its
+bytes up aren't its body's: a Responses WebSocket delta, a body whose images
+went as files, or a body not read. The request page keeps the parts in
+255ths of `UpBytes` in the packed row (`upMix`, flag `rowUpParts`, still 152
+bytes). `Totals` sum `UpCalls` (requests that sent any bytes), `UpMeasured`
+(the bytes of those with parts) and the three parts, per period and per
+agent, model or provider. The Requests card's ↑ opens `#ledUp`. It shows the
+bytes a request, a bar of the conversation, tools, system prompt, images and
+what wasn't measured, and the bytes of each agent and model. A request's
+details say "Made of". `TestPromptKnowsWhatItsBytesWere` (fails if a shared
+tool result is counted per file), `TestUpPartsScaleToTheWire`,
+`TestLedgerKeepsUpParts`, `TestRowUpPartsKept`, `TestTotalsSumUpParts` and
+`usage-upload.test.cjs` cover it. `BenchmarkPromptOfLargeBody` times the
+reader on a 1.2 MB body.
+
 ### Calls read from the agents' own files
 
 A call an agent made without magpie reaches Usage only when its own files
@@ -764,14 +918,31 @@ Code's (#1779; its sessions are on the Sessions page too, from the same
 `TestCodeBuddySessionsListedUnderTheirName`), MiniMax Code's (#1605), Kimi Code's (#1607,
 [`calls_kimi.go`](../../internal/sessions/calls_kimi.go)) and Pi's,
 Raft's Pi agents' and omp's, here and in WSL (#1951,
-[`calls_pi.go`](../../internal/sessions/calls_pi.go)). Each skips the
+[`calls_pi.go`](../../internal/sessions/calls_pi.go)), and Qoder's and
+Qoder CN's (`~/.qoder`, `~/.qoder-cn`), read as Claude Code's are
+(`ccCallAgent`; eating_dream on X). Qoder writes a reply on its own models
+(`auto` among them) with every count 0 unless `QODER_EXPOSE_TOKEN_USAGE`
+is set (qodercli 1.1.0 on, and the app's worker), and with the reply's
+`credits`: such a call has no tokens and no price, and its `Credits` are
+summed as a plan's credits are; a reply written with no usage at all is no
+call (`TestQoderCalls`, `TestDirectQoderCallsByCredits`). Each skips the
 calls the agent made through magpie's own entry, which the gateway logged
 with the account that answered: Kimi Code's are the ones whose
 `usage.record` model begins `magpie/`. Kimi Code's calls are its
 `usage.record`s in every agent's `wire.jsonl` under
 `$KIMI_CODE_HOME/sessions` (else `~/.kimi-code`), protocols 1.4 and 1.5;
 a fork repeats its parent's records, so each is keyed by agent, time,
-model and usage and counted once. Pi's and omp's calls are the session
+model and usage and counted once. The Kimi desktop app's Work (Daimon,
+which runs the Kimi Code runtime; CNSA0422 on X,
+[`kimi_work.go`](../../internal/sessions/kimi_work.go)) keeps the same
+files under `<share>/daimon/runtime/kimi-code/home/sessions`, its share
+being `kimi-desktop/daimon-share` in Electron's userData, the absolute
+`shareDir` of `daimon-storage.json` there, or `~/.kimi`; they count as
+Kimi Code's. A record's model there is Daimon's alias, read as its
+`model` in the runtime's `config.toml`, and a call whose alias's provider
+`base_url` is a loopback address (magpie's kimi-desktop plugin bridge) is
+the gateway's. That file is the current setting only
+(`TestKimiWorkCalls`). Pi's and omp's calls are the session
 files' assistant messages, and the calls beside them that Sessions counts
 too ("usage" and omp's "model_usage" entries, a compaction's, a branch
 summary's and a tool result's usage, on the model and provider in use);
@@ -840,6 +1011,15 @@ picks it up from any folder; when agy is set to use magpie it is the
 agent's launch command (the gateway's variables and `--model`) with
 `--conversation` after it (`sessions.AgyStart`, set by package agent).
 Subagents (`parent_conversation_id`) and agy in WSL are not read.
+agy's calls are also read from the profile T3 Code gives each of its
+Antigravity instances (`t3AgyDirs`): T3 Code runs `agy acp --gemini-dir
+<profile> --app-data-dir antigravity-acp` on the instance's own Google
+sign-in, the profile under `<T3 Code's folder>/userdata/providers/antigravity/`
+(or `dev/…` for its dev server; the folder is `$T3CODE_HOME` or `~/.t3`,
+`appdir.T3Code`), and those requests go to Google, not through the gateway
+(zzzkl on X; `TestAgyCallsInT3Code`, on what agy 1.5.10 wrote run that way).
+`Found` lists agy for those folders too. The Sessions page doesn't list
+them: `agy --conversation` would look in agy's own folder.
 Verification: `TestAgySessions`, `TestAgyTitleLater`, `TestAgyGrows`,
 `TestAgyTranscript`, `TestAgyFolder`, `TestAgyRowOnly`, on conversations agy 1.3.5 and 1.4.7
 wrote in a sandbox.
@@ -857,10 +1037,22 @@ including response folding and gateway matching. Insiders session ids
 have an `insiders-` prefix in magpie, leaving stable ids unchanged and
 keeping equal UUIDs in the two stores from sharing a session or call id.
 The files themselves are not renamed. Sessions stay read-only with no
-terminal resume command; encrypted conversation text is not read.
+terminal resume command. The database's step text is encrypted and not
+read; what was said is read from the plain-text transcript the app writes
+beside it, `brain/<id>/.system_generated/logs/transcript_full.jsonl` in the
+same store (`antigravityTranscript`), in agy's format and through agy's
+reader (`agyTranscript`): the user's turns, the replies, each tool call and
+its result, on the session viewer, search and the Markdown export
+(@yansheng1003 on X: only the title and preview showed). Its size and time
+are counted into the session file's with the `-wal`'s, so a step it adds
+reads the session again. A conversation with no transcript is
+`ErrNoTranscript`, as before.
 Verification: `TestAntigravityInsidersSessions` covers Insiders alone,
 both stores with the same UUID, per-model tokens, call ids, summary refresh
 and turning the existing reading choice off, using #2190's real step bytes.
+`TestAntigravityAppTranscript` reads a conversation the app's 2.30 language
+server had with a read_file call (testdata/antigravity-2.30-tools) from
+stable, Insiders and a WSL distro's store; `TestAntigravityAppNoTranscript`.
 
 A read of every call decodes each file's cached shard, and over a long
 history that is tens of thousands of files (#2278: 68k shards, 415 MB).
@@ -878,6 +1070,24 @@ writes rebuilt the whole ledger, and the app grew to 85 GB. Verification:
 `TestConcurrentCallsShareOneRead`, `TestAgentCallsReadsOneAgent`,
 `TestCodexModelEffort*` in `codex_effort_shared_test.go` (the codex-only
 answer equals the whole ledger's), and `sessions-overview-once.test.cjs`.
+
+The calls a Sessions read rides along for an idle Claude Code session
+(not changed within the hour) it reads from the start go to a pack
+(`calls-v15/*.pack`), not to a shard of the session's own: one file for
+every such session the pass read, written when the pass ends (and every
+32 MB, and in `Saved`), with each session's frames as its shard would
+hold them and an index with a CRC at its end. A session being written
+keeps its shard and `.rev`, which the lines it gains are appended to.
+A session's own shard, which any later read of it writes whole (a pack is never appended to), is read before the pack. A
+pack that can't be read whole is as if it were not there, and its
+sessions are read again; the hourly sweep removes a pack none of whose
+sessions is listed. Before this, a cold read of 12,000 sessions made
+~21,000 files, and on Windows Defender scanned each as it closed: a
+cold page took 20.7 to 31.7 s on xiaomi-gpu, against 5.7 to 5.9 s with
+the pack, and 2.0 to 2.2 s on a restart (shangyuan0818 on X). See
+[`internal/sessions/call_pack.go`](../../internal/sessions/call_pack.go),
+`TestColdSessionsReadWritesOnePack`, `TestPackedCallsServeRequests` and
+`TestPackedSessionGrows`.
 
 ### Calls an app reports itself
 
@@ -1158,6 +1368,19 @@ the session itself was hidden as a fork's copy. See
 `TestClaudeCopyBeforeACompactionIsCounted`; the fixtures in
 `testdata/claude-forks` are Claude Code 2.1.312's own files.
 
+A group's verdict is kept on disk by its files' sizes and times
+(`cc_family_memo.go`), and each copy's rest by both files. While the
+process runs, the uuids read of a group's files stay in memory, a group
+found on disk included, so when the keeper grows (the live session the
+copies were made of) the group is judged on the added lines only. A copy
+that didn't change keeps its rest while the keeper only grew and holds
+none of the rest's messages; one it now holds has the rest read again. A
+long session resumed into copies of ~100 MB each re-read every copy whole
+on each turn, a second or more per change on the Sessions page (on X).
+After a start, the first change to such a group still reads each file's
+uuids once. See `TestClaudeKeeperTurnReadsNoCopy` and
+`TestClaudeKeeperTurnTheBranchHeldIsCountedOnce`.
+
 A session whose agent keeps its subagents' conversations beside its own
 lists them in `subagents` on the sessions API (`/api/sessions`, `one`, `manage`; #2261,
 [`subagents.go`](../../internal/sessions/subagents.go)), only for agents with
@@ -1288,3 +1511,35 @@ row's model, usage, cost and kind.
 Compaction is already included in Codex's total consumption, so this marker
 does not add tokens or cost. This is Codex-only; Claude behavior and the POST
 `/v1/magpie/usage/requests` ingest allowlist are unchanged.
+
+### The request feed
+
+`GET /v1/magpie/usage/requests?cursor=` (#6060, rdsaltbo on X) reads the
+ledger as changes for a program keeping a ledger of its own. The contract is
+in [reference.md](../reference.md); the code is
+[`internal/usage/feed.go`](../../internal/usage/feed.go) (state and ids) and
+[`internal/usageapi/feed.go`](../../internal/usageapi/feed.go) (the shape).
+
+- **Ids.** `feedKey` makes a row's id from fields its record never mends
+  (time, route, session, the ids it carries), not from a name the user can
+  rename or a figure that is mended; `feedID` hashes it, with a count for two
+  identical lines. A native row is keyed by what the agent's file gave
+  (`Record.MessageID` comes from the call's `Msg` and is not persisted).
+  Adding a field to a key changes every id: don't.
+- **Changes.** Every read runs the whole-ledger `LedgerOfAt(All, …)` (memo
+  only for the next page of a read that had more), compares each id's
+  `feedVersion` (tokens, outcome, names; not the price) with the journal's,
+  and gives each new or changed id the next `seq`; an id no longer in the
+  ledger becomes a tombstone (a native row matched to a gateway row, a
+  clear). A native call a file brings late is just a new id.
+- **Journal.** `usage-feed.jsonl` next to `usage.jsonl`: a header (epoch,
+  floor, seq) and one appended, synced line per change, written before the
+  read answers so a cursor is never ahead of the file. A torn last line is
+  dropped; a bad line elsewhere is a new epoch (`cursor_reset`). Tombstones
+  older than `FeedKeep` (30 days) are dropped, the floor raised, and a cursor
+  under the floor is `cursor_expired`.
+- **Cost.** A read costs a ledger read; poll in minutes. Not tried: a very
+  long history (700k+ requests) on the first read, and the journal's size.
+- **Scope.** A cursor carries a fingerprint of its filter and key. A held key
+  sees its own rows and tombstones only. `TestUsageRequestsFeedOverGateway`
+  and the `TestFeed…` tests in `internal/usage/feed_test.go` guard these.

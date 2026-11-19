@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/update"
 )
 
@@ -36,7 +38,7 @@ type webHost struct{ quit func() }
 func (webHost) HidePanel()                       {}
 func (webHost) ShowMain(string)                  {}
 func (h webHost) Quit()                          { h.quit() }
-func (webHost) OpenURL(string) error             { return nil } // the page opens links itself
+func (webHost) OpenURL(u string) error           { return openOnHost(u) }
 func (webHost) Copy(string) bool                 { return false }
 func (webHost) FitPanel(int, Glide)              {}
 func (webHost) TintPanel([4]uint8, int) bool     { return false }
@@ -47,6 +49,18 @@ func (webHost) OpenFolder(path string) error {
 }
 func (webHost) ChooseFolder(string) (string, error) {
 	return "", errors.New("in the browser magpie can't show a folder picker: type the folder's path")
+}
+
+// openOnHost opens an app's import link (cindy://, lody://, ...) on this
+// computer, the one magpie runs on: the apps' databases it reads for "added"
+// are here, so the link must open here and not in the browser that views the
+// page, which may be another machine's (Jealousy_Du on X). A web page's own
+// https links stay the page's to open. Tests stand in for the system.
+var openOnHost = func(u string) error {
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return nil // the page opens links itself
+	}
+	return proc.OpenBrowser(u)
 }
 
 // Web is a started `magpie web`: its address and the link that signs a
@@ -121,7 +135,7 @@ func StartWeb(addr, version string) (*Web, error) {
 	go w.srv.Serve(ln)
 	// Settings' AutoRestart: magpie web runs on as the new version (#2096)
 	updates.autoRestart = func() bool {
-		if restartInto(true, false, "", true, false) {
+		if restartInto(true, false, "", true) {
 			quit()
 			return true
 		}
@@ -144,7 +158,7 @@ func (w *Web) ServesGateway() bool { return served.Load() != nil }
 func (w *Web) Wait() error {
 	<-w.quit
 	time.Sleep(200 * time.Millisecond) // the answer to the Quit gets out
-	w.srv.Close()
+	w.Close()
 	if !webReexec.Load() {
 		return nil
 	}
@@ -152,12 +166,40 @@ func (w *Web) Wait() error {
 	if err != nil {
 		return err
 	}
-	// the plugin hosts end, waited for, first: one still running at the
-	// exec is a child nothing waits for after it, <defunct> under this
-	// pid from then on (#3285)
+	// End and reap plugin hosts before replacing this process (#3285).
 	plugin.EndHosts()
 	return update.Reexec(exe, os.Args[1:], append(os.Environ(), webRunKey+"="+w.key))
 }
+
+// Close stops the web page and waits for this process's gateway to save its sessions.
+func (w *Web) Close() {
+	// a gateway draining (a SIGTERM, gateway.Drain) lets the page port's
+	// requests in flight finish too, the /v1 ones an agent sends through it
+	// included, for as long as the gateway gives its own
+	pageDone := make(chan struct{})
+	if gw := served.Load(); gw != nil && gw.Draining() {
+		go func() {
+			defer close(pageDone)
+			ctx, cancel := context.WithTimeout(context.Background(), gw.Grace())
+			defer cancel()
+			if w.srv.Shutdown(ctx) != nil {
+				w.srv.Close()
+			}
+		}()
+	} else {
+		w.srv.Close()
+		close(pageDone)
+	}
+	// The gateway keeps idle Claude sessions as it ends. Wait for that
+	// before returning or replacing this process, or the next turn has
+	// to replay the whole conversation instead of resuming its session.
+	stopServing()
+	<-pageDone
+}
+
+// ServedGateway is the gateway this process serves, nil while another
+// magpie has it.
+func ServedGateway() *gateway.Server { return served.Load() }
 
 // webKeyMin is the shortest MAGPIE_WEB_KEY taken: it is all that stands
 // between the network and the keys behind the page.
@@ -326,7 +368,7 @@ func webTurnedAway(rw http.ResponseWriter, r *http.Request, back, why string) {
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	rw.Header().Set("Cache-Control", "no-store")
 	rw.WriteHeader(http.StatusUnauthorized)
-	fmt.Fprintf(rw, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>magpie web</title>
+	fmt.Fprintf(rw, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>magpie web</title>
 <style>body{font:15px/1.5 system-ui,sans-serif;max-width:32em;margin:12vh auto;padding:0 16px;color:#222;background:#fafafa}@media(prefers-color-scheme:dark){body{color:#ddd;background:#1c1c1e}}input,button{font:inherit;padding:.4em .6em}input{width:100%%;box-sizing:border-box;margin:.5em 0}</style></head>
 <body><h1>magpie web</h1><p>%s</p><p>Paste the key (MAGPIE_WEB_KEY, or the k= in the link magpie web printed when it started):</p>
 <form method="post" action="%s"><input type="hidden" name="back" value="%s"><input type="password" name="key" autocomplete="current-password" autofocus required><button type="submit">Sign in</button></form></body></html>`,

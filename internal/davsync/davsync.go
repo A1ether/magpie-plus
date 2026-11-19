@@ -53,7 +53,7 @@ import (
 // addPlugins is backup.AddPlugins: a var so a test installs nothing.
 var addPlugins = backup.AddPlugins
 
-// removePlugin is provider.RemovePlugin, as Settings → Plugins removes one:
+// removePlugin is provider.RemovePlugin, as the Plugins page removes one:
 // a var so a test removes nothing.
 var removePlugin = func(name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -87,6 +87,14 @@ type Config struct {
 	Branch string `json:"branch,omitempty"`
 	Keys   bool   `json:"keys"`   // providers carry their API keys
 	Agents bool   `json:"agents"` // the agents' models go too
+	// Providers, Settings and Profiles are whether each of those parts
+	// goes; nil, as in a setup made before they could be left out, is yes.
+	// A part left out stays as it is on each computer (jinpwng on X,
+	// #6428: only the library and memory synced, each computer keeping its
+	// own providers, settings and models).
+	Providers *bool `json:"providers,omitempty"`
+	Settings  *bool `json:"settings,omitempty"`
+	Profiles  *bool `json:"profiles,omitempty"`
 	// Library is whether the library goes too; nil, as in a setup made
 	// before it could, is yes
 	Library *bool `json:"library,omitempty"`
@@ -102,6 +110,14 @@ type Config struct {
 	// Passphrase: off unless the user turns it on
 	// (provider.MergeSignIns says how two computers' are merged).
 	SignIns bool `json:"signIns,omitempty"`
+	// SignInsExcept are the subscriptions (provider ids) whose sign-ins
+	// this computer leaves out of SignIns (Ethereal499 on X: Claude's, as
+	// Claude is wary of where its accounts are used): theirs here never go
+	// up, the server's are never put in here, and theirs here are kept as
+	// they are, none taken away for the server lacking it. The server's
+	// copy goes on as it was for the computers that sync them. None, as
+	// in a setup made before the choice, leaves none out.
+	SignInsExcept []string `json:"signInsExcept,omitempty"`
 	// Other is the most recently left server, retained for older clients.
 	// Servers holds every inactive kind. Nothing syncs to them.
 	Other *Server `json:"other,omitempty"`
@@ -185,6 +201,9 @@ func (old Config) saved(c Config) Config {
 func (c Config) library() bool { return c.Library == nil || *c.Library }
 
 func (c Config) memoryOn() bool { return c.Memory == nil || *c.Memory }
+
+// yes is a part's choice, nil (a setup from before it could be made) yes.
+func yes(b *bool) bool { return b == nil || *b }
 
 // S3 is whether c keeps the file in an S3 bucket rather than a WebDAV folder.
 func (c Config) S3() bool {
@@ -271,6 +290,19 @@ type state struct {
 	// goes from the other (pluginPlan). Nil when not known (never synced
 	// with them, or a blind write went over), when none is taken for removed.
 	Plugins []string `json:"plugins,omitempty"`
+	// Off is the parts the last sync left out (Config.syncs): one synced
+	// again since is joined again, each side's own as on a first sync,
+	// rather than taken as unchanged on both sides while they differ.
+	Off []string `json:"off,omitempty"`
+	// Applied is the last sync that brought parts in here, for UndoSync.
+	Applied *applied `json:"applied,omitempty"`
+	// LibraryLeft is the library's skills and plugins whose files the
+	// last sync left out of the server's file, too big for it (#5715);
+	// LibraryProblems what of the library the last sync that brought it
+	// in couldn't put here, such as a skill not fetched from its source
+	// yet. Both are said on the Settings page, never a silent success.
+	LibraryLeft     []string          `json:"libraryLeft,omitempty"`
+	LibraryProblems []library.Problem `json:"libraryProblems,omitempty"`
 }
 
 // blind is a write the server didn't check: the file it wrote (Sum), and
@@ -496,7 +528,7 @@ func Off() error {
 			os.Remove(path("sync-state.json"))
 			os.Remove(path(cacheName))
 		} else {
-			st.Error, st.Notice, st.Undo, st.Usage = "", nil, "", nil
+			st.Error, st.Notice, st.Undo, st.Usage, st.Applied = "", nil, "", nil, nil
 			saveState(st)
 		}
 		usage.DropAllShared()   // the others' usage came by sync: it goes with it (#542)
@@ -524,8 +556,14 @@ type View struct {
 	Branch        string `json:"branch,omitempty"`
 	Library       bool   `json:"library"`
 	Memory        bool   `json:"memory"`
+	Providers     bool   `json:"providers"`
+	Settings      bool   `json:"settings"`
+	Profiles      bool   `json:"profiles"`
 	Usage         bool   `json:"usage,omitempty"`
 	SignIns       bool   `json:"signIns,omitempty"`
+	// SignInsExcept are the subscriptions whose sign-ins stay out
+	// (Config.SignInsExcept)
+	SignInsExcept []string `json:"signInsExcept,omitempty"`
 	// UsageError is why usage couldn't be shared the last time it was tried
 	UsageError string    `json:"usageError,omitempty"`
 	Last       time.Time `json:"last,omitzero"`
@@ -543,6 +581,9 @@ type View struct {
 	FollowServer bool `json:"followServer,omitempty"`
 	// Undo is whether the last Restore can be undone
 	Undo bool `json:"undo,omitempty"`
+	// Applied is the last sync that brought parts in here, which
+	// UndoSync takes back on this computer
+	Applied *Applied `json:"applied,omitempty"`
 	// File is what the server holds instead of a backup, when Error is
 	// that it isn't one; File.Replace offers Upload
 	File *ServerFile `json:"serverFile,omitempty"`
@@ -553,6 +594,9 @@ type View struct {
 	// Own is the agent fields picked on this computer after a sync set
 	// them, which sync leaves as they are here (own.go)
 	Own []OwnField `json:"own,omitempty"`
+	// LibraryLeft and LibraryProblems are the last sync's (state)
+	LibraryLeft     []string `json:"libraryLeft,omitempty"`
+	LibraryProblems []string `json:"libraryProblems,omitempty"`
 }
 
 // OtherView is the other kind's server as the Settings page shows it.
@@ -571,21 +615,29 @@ type OtherView struct {
 func Status() View {
 	c, ok := Load()
 	if !ok {
-		return View{Keys: true, Agents: true, Library: true, Memory: true}
+		return View{Keys: true, Agents: true, Library: true, Memory: true, Providers: true, Settings: true, Profiles: true}
 	}
 	st := loadState()
 	v := View{On: true, URL: c.URL, User: c.User, PasswordSet: c.Password != "", PassphraseSet: c.Passphrase != "",
 		Keys: c.Keys, Agents: c.Agents, Library: c.library(), Memory: c.memoryOn(), Error: st.Error, Notice: st.Notice,
+		Providers: c.syncs("providers"), Settings: c.syncs("settings"), Profiles: c.syncs("profiles"),
 		Kind: strings.ToLower(c.Kind()), Endpoint: c.Endpoint, Region: c.Region, PathStyle: c.PathStyle, Branch: c.Branch,
 		Auto: int(c.auto() / time.Minute), FollowServer: c.FollowServer}
 	if st.Key == stateKey(c) {
 		v.Last = st.Last
 		v.Undo = st.Undo != "" && isFile(st.Undo)
+		if a := st.Applied; a != nil && isFile(a.File) {
+			v.Applied = &Applied{At: a.At, Parts: a.Parts}
+		}
 		if st.Error != "" {
 			v.File = st.File
 		}
 		if c.Usage && st.Usage != nil {
 			v.UsageError = st.Usage.Error
+		}
+		if c.library() {
+			// one settled since (Update fetched the skill) isn't said
+			v.LibraryLeft, v.LibraryProblems = st.LibraryLeft, said(library.Unsettled(st.LibraryProblems))
 		}
 		if !st.Last.IsZero() {
 			if ps, err := provider.Stored(); err == nil {
@@ -593,7 +645,7 @@ func Status() View {
 			}
 		}
 	}
-	v.Usage, v.SignIns = c.Usage, c.SignIns
+	v.Usage, v.SignIns, v.SignInsExcept = c.Usage, c.SignIns, c.SignInsExcept
 	if c.Agents {
 		v.Own = ownFields(st)
 	}
@@ -717,12 +769,22 @@ var mu sync.Mutex
 
 // Now syncs once; nothing when sync is off. Usage is shared at most every
 // usageEvery.
-func Now(ctx context.Context) error { return syncNow(ctx, false) }
+func Now(ctx context.Context) error { return syncNow(ctx, false, "") }
 
 // SyncNow is Now asked for: usage is shared whatever the time.
-func SyncNow(ctx context.Context) error { return syncNow(ctx, true) }
+func SyncNow(ctx context.Context) error { return syncNow(ctx, true, "") }
 
-func syncNow(ctx context.Context, force bool) error {
+// SyncPreviewed is SyncNow for what Preview told, its Token: when the
+// sync would now do anything else, nothing is done, and it is
+// ErrPlanChanged.
+func SyncPreviewed(ctx context.Context, token string) error {
+	if token == "" {
+		return errors.New("no preview to sync")
+	}
+	return syncNow(ctx, true, token)
+}
+
+func syncNow(ctx context.Context, force bool, expect string) error {
 	if _, ok := Load(); !ok { // off: no lock taken, so none made
 		return nil
 	}
@@ -747,9 +809,18 @@ func syncNow(ctx context.Context, force bool) error {
 	if st.Key != stateKey(c) { // another folder or passphrase: start afresh
 		st = state{Key: stateKey(c), Brought: st.Brought, Replaced: st.Replaced, Own: st.Own, Follow: st.Follow, Here: st.Here}
 	}
-	err = syncOnce(ctx, c, &st)
+	if expect != "" { // what the user saw previewed, or nothing
+		p, err := preview(ctx, c, st)
+		if err != nil {
+			return err
+		}
+		if p.Token != expect {
+			return ErrPlanChanged
+		}
+	}
+	err = syncOnce(ctx, c, &st, nil)
 	if errors.Is(err, errChanged) { // another computer got in between: again, over its version
-		err = syncOnce(ctx, c, &st)
+		err = syncOnce(ctx, c, &st, nil)
 	}
 	st.Error, st.File = "", nil
 	var nb *notBackup
@@ -854,6 +925,8 @@ func collect(c Config) (backup.Bundle, error) {
 		s := settings.Load()
 		b.Settings = &s
 	}
+	// a provider kept on this computer (Provider.ThisDevice) never goes out
+	b.Providers, b.Order = provider.SyncedOnly(b.Providers, b.Order)
 	if !c.Agents {
 		b.Agents = nil
 	}
@@ -867,6 +940,8 @@ func collect(c Config) (backup.Bundle, error) {
 		if serr := backup.WithSignIns(&b); serr != nil {
 			return b, fmt.Errorf("the sign-ins couldn't be read: %w", serr)
 		}
+		// the subscriptions left out here never go up
+		b.SignIns, _ = b.SignIns.Except(c.SignInsExcept)
 	}
 	return b, err
 }
@@ -886,12 +961,7 @@ func hashes(b backup.Bundle) map[string]string {
 			settingsHash = h([]any{s, *b.GatewayKeys, *b.AccountGroups})
 		}
 	}
-	ps := slices.Clone(b.Providers)
-	for i := range ps { // this computer's own: kept by Mirror, never synced
-		ps[i].KeepLogin, ps[i].KeepLoginAs, ps[i].SwitchOnly, ps[i].RestartApp = false, "", false, false
-		ps[i].KeepSelf = false
-	}
-	providers := []any{ps, b.Icons, b.Groups}
+	providers := []any{syncedProviders(b.Providers), b.Icons, b.Groups}
 	if b.Searches != nil && len(*b.Searches) > 0 { // as before them, without one
 		providers = append(providers, *b.Searches)
 	}
@@ -913,9 +983,24 @@ func hashes(b backup.Bundle) map[string]string {
 		c.Subagents = nil
 		lib = &c
 	}
+	if lib != nil && lib.Commands != nil && len(*lib.Commands) == 0 { // as before them, without one
+		c := *lib
+		c.Commands = nil
+		lib = &c
+	}
+	if lib != nil && lib.Rules != nil && len(*lib.Rules) == 0 { // as before them, without one
+		c := *lib
+		c.Rules = nil
+		lib = &c
+	}
 	if lib != nil && lib.Hooks != nil && len(*lib.Hooks) == 0 { // as before them, without one
 		c := *lib
 		c.Hooks = nil
+		lib = &c
+	}
+	if lib != nil && lib.Plugins != nil && len(*lib.Plugins) == 0 { // as before them, without one
+		c := *lib
+		c.Plugins = nil
 		lib = &c
 	}
 	out := map[string]string{
@@ -932,6 +1017,17 @@ func hashes(b backup.Bundle) map[string]string {
 		out["memory"] = b.Memory.Hash()
 	}
 	return out
+}
+
+// syncedProviders is ps as they are compared: this computer's own fields,
+// kept by Mirror and never synced, left out.
+func syncedProviders(ps []provider.Provider) []provider.Provider {
+	ps = slices.Clone(ps)
+	for i := range ps {
+		ps[i].KeepLogin, ps[i].KeepLoginAs, ps[i].SwitchOnly, ps[i].RestartApp = false, "", false, false
+		ps[i].KeepSelf = false
+	}
+	return ps
 }
 
 // unset says whether b holds nothing of its own in part p: no provider
@@ -975,7 +1071,8 @@ func unset(b backup.Bundle, p string) bool {
 			}
 		}
 		return len(l.MCP) == 0 && len(l.Skills) == 0 &&
-			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0)
+			(l.Subagents == nil || len(*l.Subagents) == 0) && (l.Commands == nil || len(*l.Commands) == 0) && (l.Rules == nil || len(*l.Rules) == 0) && (l.Hooks == nil || len(*l.Hooks) == 0) &&
+			(l.Bili == nil || strings.TrimSpace(*l.Bili) == "") && l.ClaudePlugins == nil && (l.Plugins == nil || len(*l.Plugins) == 0)
 	}
 	return false
 }
@@ -1042,8 +1139,8 @@ func take(to *backup.Bundle, from backup.Bundle, part string) {
 			px := slices.Clone(*from.Proxies)
 			if !keys && to.Proxies != nil && (to.Keys || (to.ProvidersKeys != nil && *to.ProvidersKeys)) {
 				for i := range px {
-					if j := slices.IndexFunc(*to.Proxies, func(o settings.NamedProxy) bool { return o.ID == px[i].ID }); j >= 0 && px[i].Pass == "" {
-						px[i].Pass = (*to.Proxies)[j].Pass
+					if j := slices.IndexFunc(*to.Proxies, func(o settings.NamedProxy) bool { return o.ID == px[i].ID }); j >= 0 {
+						px[i].KeepSecretsOf((*to.Proxies)[j]) // an SSH proxy's key with its password
 					}
 				}
 			}
@@ -1187,10 +1284,55 @@ func bring(b backup.Bundle, part string) error {
 		_, err := backup.Restore(b, backup.Parts{Agents: true})
 		return err
 	case "library":
-		_, err := backup.Restore(b, backup.Parts{Library: true})
+		_, err := bringLibrary(b)
 		return err
 	}
 	return nil
+}
+
+// bringLibrary puts the library b carries here, and says what of it
+// couldn't be: a skill not fetched from its source yet, one kept as it was
+// changed here (library.Put).
+func bringLibrary(b backup.Bundle) ([]library.Problem, error) {
+	r, err := backup.Restore(b, backup.Parts{Library: true})
+	return r.LibraryProblems, err
+}
+
+// said is library problems as the Settings page says them: "pdf: why".
+func said(probs []library.Problem) []string {
+	var out []string
+	for _, p := range probs {
+		_, name, ok := strings.Cut(p.What, ":")
+		if !ok {
+			name = p.What
+		}
+		out = append(out, name+": "+p.Error)
+	}
+	return out
+}
+
+// leftOut is the skills and plugins whose files this computer's library
+// leaves out of a sync, too big for it (library.Collect), or doesn't have
+// as another computer left them out (library.Skill's Missing). A skill
+// carried as its source isn't: each computer fetches it from there.
+func leftOut(l *library.Bundle) []string {
+	if l == nil {
+		return nil
+	}
+	var names []string
+	for _, s := range l.Skills {
+		if len(s.Left) > 0 && !s.Fetch {
+			names = append(names, s.Name)
+		}
+	}
+	if l.Plugins != nil {
+		for _, p := range *l.Plugins {
+			if len(p.Left) > 0 {
+				names = append(names, p.Name)
+			}
+		}
+	}
+	return names
 }
 
 // keepUnseenGatewayKeys puts the gateway keys this computer holds that the
@@ -1231,7 +1373,10 @@ func keepUnseenGatewayKeys(remote *backup.Bundle, local backup.Bundle) {
 	}
 }
 
-func syncOnce(ctx context.Context, c Config, st *state) error {
+// syncOnce syncs once. With pv, it is a preview: the server's file is
+// read whole, what the sync would do is told in pv, and nothing is changed
+// here or on the server.
+func syncOnce(ctx context.Context, c Config, st *state, pv *Plan) error {
 	d, err := newRemote(c)
 	if err != nil {
 		return err
@@ -1279,8 +1424,29 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	moved := !slices.Equal(kept, st.Here)
 	keep, afterW := withHere(own, kept), withHere(after, kept)
 	L := hashesOwn(local, prev)
+	// parts left out at the last sync and synced now: joined again
+	var rejoin []string
+	for _, p := range st.Off {
+		if slices.Contains(Parts, p) && c.syncs(p) {
+			rejoin = append(rejoin, p)
+		}
+	}
+	// a state written before Off was recorded (#3356): the last sync left
+	// a part out but wrote no mark of it, and all it left of the part here
+	// is the nothing-hash a left-out part carries. One that holds something
+	// of its own now joins like one turned back on, its older content never
+	// taken as a change here over the server's newer one.
+	nothing := hashes(backup.Bundle{})
+	for _, p := range Parts {
+		if !c.syncs(p) || slices.Contains(rejoin, p) || st.Local == nil {
+			continue
+		}
+		if st.Local[p] == nothing[p] && L[p] != st.Local[p] && !unset(local, p) {
+			rejoin = append(rejoin, p)
+		}
+	}
 	if unchanged {
-		if maps.Equal(L, st.Local) && !follow && !moved {
+		if maps.Equal(L, st.Local) && !follow && !moved && len(rejoin) == 0 {
 			return nil // nothing changed on either side
 		}
 		// changed here: merged with the server's file as last seen, or,
@@ -1316,8 +1482,16 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	if data == nil && c.FollowServer {
 		return errNothingToFollow
 	}
+	if data == nil && pv != nil {
+		pv.Empty = true
+		for _, p := range c.Synced() {
+			pv.Parts = append(pv.Parts, PartPlan{Part: p, Do: "up"})
+		}
+		return nil
+	}
 	if data == nil { // nothing there yet: this computer's setup is the first
-		if err := push(local, "", blind{}); err != nil {
+		// the parts not synced go as unset, never this computer's (only)
+		if err := push(c.only(local), "", blind{}); err != nil {
 			return err
 		}
 		st.Own, st.Here = after, kept
@@ -1326,10 +1500,18 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		if c.SignIns {
 			st.SignIns = local.SignIns.Hashes()
 		}
-		st.Plugins = pluginNames(local.Plugins)
+		st.Plugins = nil
+		if c.syncs("providers") {
+			st.Plugins = pluginNames(local.Plugins)
+		}
+		st.Off = c.left()
+		st.LibraryLeft = nil
+		if c.library() {
+			st.LibraryLeft = leftOut(local.Library)
+		}
 		return nil
 	}
-	if sum(data) == st.Sum && maps.Equal(L, st.Local) && !follow && !moved {
+	if sum(data) == st.Sum && maps.Equal(L, st.Local) && !follow && !moved && len(rejoin) == 0 {
 		st.Server = ver
 		remember(data)
 		return nil // nothing changed on either side
@@ -1362,7 +1544,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		// survive the way they would on any sync.
 		// A computer following the server never writes it, a rebuild
 		// included: the computer it follows, or Upload, replaces the file.
-		if !errors.Is(err, backup.ErrCorrupt) || st.Local == nil || c.FollowServer {
+		if !errors.Is(err, backup.ErrCorrupt) || st.Local == nil || c.FollowServer || pv != nil {
 			return described(c, data, err)
 		}
 		good := cached(st.Sum) // the version this computer last read whole
@@ -1400,7 +1582,11 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	first := st.Local == nil
 	// plugins removed on one side since the last sync: gone from the other
 	// too, and not brought back by the part that carries them
-	goneHere, goneThere := pluginPlan(st.Plugins, local.Plugins, remote.Plugins)
+	// providers not synced: their plugins neither (they ride that part)
+	var goneHere, goneThere []string
+	if c.syncs("providers") {
+		goneHere, goneThere = pluginPlan(st.Plugins, local.Plugins, remote.Plugins)
+	}
 	if len(goneHere) > 0 && remote.Plugins != nil {
 		kept := without(*remote.Plugins, goneHere)
 		remote.Plugins = &kept
@@ -1408,7 +1594,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	merged := remote
 	var bringIn, here, there []string
 	for _, p := range Parts {
-		if L[p] == R[p] || (p == "agents" && !c.Agents) || (p == "library" && !c.library()) {
+		if L[p] == R[p] || !c.syncs(p) {
 			continue
 		}
 		if p == "library" && remote.Library == nil { // from a magpie before the library went: this computer's goes up
@@ -1417,12 +1603,22 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		}
 		lc := !first && L[p] != st.Local[p]
 		rc := first || R[p] != st.Remote[p]
+		again := !first && slices.Contains(rejoin, p)
+		if again {
+			// synced again after it was left out: each side's own counts
+			// as changed there, as on joining; a side with none of its own
+			// takes the other's (#5642), both with some, the newer stays
+			lc, rc = !unset(local, p), !unset(remote, p)
+			if !lc && !rc {
+				lc, rc = true, true
+			}
+		}
 		if c.FollowServer {
 			// following the server: what changed on either side is the
 			// server's, a change here kept aside first. A part the server's
 			// file holds nothing of on joining is left as it is here
 			// (#5642): nothing has been set there to follow yet.
-			if remote.Library == nil && p == "library" || first && unset(remote, p) && !unset(local, p) {
+			if remote.Library == nil && p == "library" || (first || again) && unset(remote, p) && !unset(local, p) {
 				continue
 			}
 			if lc || rc {
@@ -1470,6 +1666,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 			}
 		}
 	}
+	if pv != nil {
+		return previewed(pv, c, local, remote, merged, bringIn, here, there, goneThere, st.SignIns)
+	}
 	var saved string
 	if len(here)+len(there) > 0 {
 		dir := path("sync")
@@ -1485,10 +1684,28 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		}
 		saved = dir
 	}
+	// what is here before the server's parts come in, sealed with the
+	// keys, for UndoSync; a copy that can't be kept stops nothing
+	var before string
+	if len(bringIn) > 0 {
+		var err error
+		if before, err = keepSealed(c, "before-sync"); err != nil {
+			log.Printf("sync: keeping this computer's setup before bringing in %v: %v", bringIn, err)
+		}
+	}
+	broughtLib := false
 	for _, p := range bringIn {
 		if p == "agents" {
 			got, err := bringAgents(remote.Agents, afterW)
 			broughtIn(st, got)
+			if err != nil {
+				return fmt.Errorf("bringing in the %s: %w", p, err)
+			}
+			continue
+		}
+		if p == "library" {
+			probs, err := bringLibrary(remote)
+			st.LibraryProblems, broughtLib = probs, true
 			if err != nil {
 				return fmt.Errorf("bringing in the %s: %w", p, err)
 			}
@@ -1541,7 +1758,11 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	var shared map[string]string
 	if c.SignIns {
 		var plan provider.SignInPlan
-		merged.SignIns, plan, shared = provider.MergeSignIns(local.SignIns, remote.SignIns, st.SignIns)
+		// the server's of the subscriptions left out here: not put in
+		// here, and going on up as they were, for the others
+		theirs, held := remote.SignIns.Except(c.SignInsExcept)
+		merged.SignIns, plan, shared = provider.MergeSignIns(local.SignIns, theirs, st.SignIns)
+		merged.SignIns = merged.SignIns.With(held)
 		if !plan.Empty() {
 			if _, err := provider.ApplySignIns(plan); err != nil {
 				return fmt.Errorf("bringing in the sign-ins: %w", err)
@@ -1595,12 +1816,23 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 		}
 	}
 	st.Local = now
+	st.Off = c.left()
+	if !broughtLib {
+		st.LibraryProblems = library.Unsettled(st.LibraryProblems)
+	}
+	st.LibraryLeft = nil
+	if c.library() {
+		st.LibraryLeft = leftOut(local.Library)
+	}
+	if before != "" {
+		st.Applied = &applied{At: time.Now(), Parts: bringIn, File: before, After: now}
+	}
 	st.SignIns = nil
 	if c.SignIns {
 		st.SignIns = bothSides(shared, local.SignIns.Hashes())
 	}
 	st.Plugins = nil
-	if merged.Plugins != nil {
+	if merged.Plugins != nil && c.syncs("providers") {
 		// on both sides now; a removal that failed here stays known, so
 		// the next sync tries it again
 		both := slices.DeleteFunc(pluginNames(local.Plugins), func(n string) bool {

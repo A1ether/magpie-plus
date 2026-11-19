@@ -147,6 +147,12 @@ func SetReads(all *bool, agents map[string]bool) error {
 				}
 				r.Agents[a] = on
 			}
+			for a := range cur.Kept {
+				if r.Kept == nil {
+					r.Kept = map[string]bool{}
+				}
+				r.Kept[a] = true
+			}
 		}
 		if all != nil {
 			r.All = *all
@@ -156,6 +162,21 @@ func SetReads(all *bool, agents map[string]bool) error {
 				r.Agents = map[string]bool{}
 			}
 			r.Agents[a] = on
+			// an agent turned off on its own (all not sent: Keep off,
+			// Settings › Privacy) is kept off and not asked about again;
+			// one left off in the first choice's list is (Kept)
+			switch {
+			case on:
+				delete(r.Kept, a)
+			case all == nil:
+				if r.Kept == nil {
+					r.Kept = map[string]bool{}
+				}
+				r.Kept[a] = true
+			}
+		}
+		if len(r.Kept) == 0 {
+			r.Kept = nil
 		}
 		return r
 	})
@@ -244,10 +265,25 @@ func Found() []string {
 	add("cursor", filepath.Join(CursorDir(), "chats"), filepath.Join(cursorDataDir(), "projects"), cursorEditorDB())
 	add("hermes", HermesDirs()...)
 	add("alma", almaDB())
+	add("openmausbot", ombDB())
+	add("liveagent", liveagentSessions())
 	add("minimax-code", minimaxSessions())
-	add("kimi", kimiSessions())
-	add("agy", filepath.Join(AgyDir(), "brain"))
+	kimi := []string{kimiSessions()}
+	for _, sh := range kimiWorkShares() {
+		kimi = append(kimi, filepath.Join(kimiWorkRuntime(sh), "home", "sessions"))
+	}
+	add("kimi", kimi...)
+	var agy []string
+	for _, d := range agyDataDirs() {
+		agy = append(agy, filepath.Join(d, "brain"))
+	}
+	add("agy", agy...)
 	add("antigravity", antigravityConversations(), filepath.Join(AntigravityInsidersDir(), "conversations"))
 	add("gemini", geminiTmpDir())
+	var devin []string
+	for _, d := range DevinCLIDirs() {
+		devin = append(devin, filepath.Join(d, "sessions.db"), filepath.Join(d, "sessions"))
+	}
+	add("devin", devin...)
 	return out
 }

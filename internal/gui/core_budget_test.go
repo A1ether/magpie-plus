@@ -17,8 +17,10 @@ import (
 // never what pays for a change (#5918); the history of each number is in
 // `git log -L` of this file.
 const (
-	appScriptBudget  = 1_086_267 // app.js: 1,080,614 at 8016205e3, with the 5,653 of room it had; 1,080,467 with the fork's Expiry first routing in the editor's ROUTINGS (app.js), still under it
-	coreScriptBudget = 1_263_532 // every core script at 8016205e3, the old measure 682 over its cap there (#5918); upstream's own head measures 1,263,190, 143 under its cap of 1,263,333, and the fork's Expiry first routing adds 342 bytes of app.js code, so the core measures 1,263,532 here
+	// +342 in both: the fork's Expiry first routing in the editor's
+	// ROUTINGS (app.js), on top of upstream's own head at each number.
+	appScriptBudget  = 1_089_594 // app.js at upstream's head, 1,089,252, plus the fork's 342
+	coreScriptBudget = 1_274_285 // every core script at upstream's head, 1,273,943, plus the fork's 342
 )
 
 // codeBytes is how many bytes of b are code: its blank lines, its lines

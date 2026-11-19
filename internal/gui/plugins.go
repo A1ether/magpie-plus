@@ -24,7 +24,7 @@ import (
 )
 
 // OpenCode's provider plugins (internal/plugin): the providers they sign
-// in to are subscriptions in the add sheet, and Settings → Plugins adds,
+// in to are subscriptions in the add sheet, and the Plugins page adds,
 // updates and removes them.
 
 // pluginSubJSON is a plugin's provider as the add sheet lists it.
@@ -38,6 +38,11 @@ type pluginSubJSON struct {
 	SignedIn bool            `json:"signedIn"`
 	Single   bool            `json:"single,omitempty"`
 	Models   int             `json:"models"`
+	// Importable says its accounts can be brought in from a file
+	// (auth.import); ImportFrom(s) is which file, as the plugin says it
+	Importable  bool              `json:"importable,omitempty"`
+	ImportFrom  string            `json:"importFrom,omitempty"`
+	ImportFroms map[string]string `json:"importFroms,omitempty"`
 	// Options are the switches the plugin declares (auth.options, #2038),
 	// each with where it stands now
 	Options []pluginOptionJSON `json:"options,omitempty"`
@@ -88,12 +93,13 @@ func pluginSubs() []pluginSubJSON {
 		out = append(out, pluginSubJSON{
 			ID: provider.PluginID(pp.ID), PID: pp.ID, Name: pp.Name, Icon: pluginIcon(pp), Spec: pp.Spec,
 			Methods: pp.Methods, SignedIn: pp.SignedIn, Single: pp.Single, Models: len(pp.Models), Options: opts,
+			Importable: pp.Importable, ImportFrom: pp.ImportFrom, ImportFroms: pp.ImportFroms,
 		})
 	}
 	return out
 }
 
-// pluginEntryJSON is a plugin as Settings → Plugins lists it.
+// pluginEntryJSON is a plugin as the Plugins page lists it.
 type pluginEntryJSON struct {
 	plugin.Entry
 	Error     string   `json:"error,omitempty"`   // why it didn't load
@@ -230,6 +236,10 @@ type pluginsJSON struct {
 	// Registry is the npm registry plugins are installed from and npm's
 	// answers asked of, and where it came from (plugin.Registry)
 	Registry plugin.RegistryInUse `json:"registry"`
+	// Leftovers are plugins/'s dependencies no plugin is installed as (a
+	// failed install's, from before magpie took them out), each with a
+	// Remove: Bun installs every one again at every install
+	Leftovers []plugin.Leftover `json:"leftovers"`
 }
 
 // registryJSON is plugin.Registry with its file's path as the page shows it.
@@ -242,7 +252,10 @@ func registryJSON() plugin.RegistryInUse {
 }
 
 func pluginsState(ctx context.Context, w Windows) pluginsJSON {
-	s := pluginsJSON{Plugins: []pluginEntryJSON{}, Bun: plugin.HasBun(), BunVer: plugin.BunInUse(), Movable: provider.MoveCandidates(), Picker: w != nil && !isWeb(w), Mirror: settings.Load().ChinaMirror, Registry: registryJSON()}
+	s := pluginsJSON{Plugins: []pluginEntryJSON{}, Bun: plugin.HasBun(), BunVer: plugin.BunInUse(), Movable: provider.MoveCandidates(), Picker: w != nil && !isWeb(w), Mirror: settings.Shared().ChinaMirror, Registry: registryJSON(), Leftovers: plugin.Leftovers()}
+	if s.Leftovers == nil {
+		s.Leftovers = []plugin.Leftover{}
+	}
 	l := plugin.Load()
 	errs := map[string]string{}
 	names := map[string][]string{}
@@ -588,6 +601,7 @@ var (
 	removePlugin  = provider.RemovePlugin
 	updatePlugins = plugin.Update
 	upgradePlugin = plugin.Upgrade
+	dropLeftover  = plugin.RemoveLeftover
 )
 
 func pluginRoutes(mux *http.ServeMux, w Windows) {
@@ -777,6 +791,8 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 			err = plugin.SetOptions(in.Spec, in.Options)
 		case "prefer":
 			err = plugin.Prefer(in.Spec, in.Provider)
+		case "leftover":
+			err = dropLeftover(ctx, in.Spec)
 		default:
 			http.NotFound(rw, r)
 			return
@@ -869,7 +885,7 @@ func pluginRoutes(mux *http.ServeMux, w Windows) {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, openSignIn(w, st))
+		writeJSON(rw, openSignIn(w, st, false))
 	})
 }
 

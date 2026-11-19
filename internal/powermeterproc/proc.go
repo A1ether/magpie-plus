@@ -24,12 +24,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/lazyre"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -74,7 +74,7 @@ const (
 //
 // The URL is the one source of the random port: --port 0 lets the kernel
 // pick it, and power-meter reads the real port back from its listener.
-var readyLineRe = regexp.MustCompile(`listening at (http://[^\s]+)`)
+var readyLineRe = lazyre.New(`listening at (http://[^\s]+)`)
 
 // A Supervisor owns the one power-meter child and the goroutine that keeps
 // it alive. The zero value is ready to use.

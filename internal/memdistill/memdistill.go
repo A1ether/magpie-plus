@@ -531,7 +531,9 @@ Keep only what stays true beyond this conversation and that a later assistant co
 
 Each item rests on words the user wrote in this conversation: quote them exactly. Leave out what only the assistant said, such as rules it follows from its own instructions or notes.
 
-Leave out: the task itself and its progress, anything about this conversation alone, code details visible in the repository, secrets (keys, tokens, passwords), and anything already in "Already known". When nothing is worth keeping, answer [].
+A rule or convention of one project belongs in the project's own instruction files and docs, which the user keeps up to date, not here: leave it out unless it is about how this user works everywhere. Never keep an item that disagrees with what the project's files say in the conversation.
+
+Leave out: the task itself and its progress, anything about this conversation alone, code details visible in the repository, what the project's instruction files or docs say, secrets (keys, tokens, passwords), and anything already in "Already known". When nothing is worth keeping, answer [].
 
 Answer with a JSON array alone, at most 5 items:
 [{"text": "one short sentence, in the language the user wrote in", "kind": "preference", "scope": "global or project", "why": "what in the conversation shows it", "quote": "the user's own words that show it, copied exactly, short"}]
@@ -615,7 +617,8 @@ func keep(fs []found, s sessions.Session, proj *memory.Project, their string) in
 
 // Keep runs Run first after first, then every interval, until ctx ends,
 // and Dream after it when one is due (Dreams); auto gives the automatic
-// model at each run.
+// model at each run. Each tick applies memory's retention first
+// (memory.Prune), distilling on or off.
 func Keep(ctx context.Context, first, interval time.Duration, auto func() string, complete Complete) {
 	t := time.NewTimer(first)
 	defer t.Stop()
@@ -626,6 +629,17 @@ func Keep(ctx context.Context, first, interval time.Duration, auto func() string
 		case <-t.C:
 		}
 		t.Reset(interval)
+		// retention holds whether distilling is on or not: memories saved
+		// by agents leave candidates and archived ones too
+		if _, err := memory.Prune(); err != nil {
+			log.Println("memory: retention:", err)
+		}
+		// switched off (the default): nothing to read, nor a model to
+		// ask. auto picks one from every provider's models, and that
+		// loaded the whole catalog (3.6 MB) for a run that read nothing
+		if st, err := Load(); err == nil && !st.On {
+			continue
+		}
 		if _, err := Run(ctx, auto(), complete); err != nil && !errors.Is(err, ErrRunning) {
 			log.Println("memory: reading conversations:", err) // and in the Memory tab
 		}

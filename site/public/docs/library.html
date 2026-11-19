@@ -207,6 +207,7 @@ magpie library sync     # write it into the agents again</pre>
       <li><b>Single tools off.</b> You can turn off tools one by one for Codex, Gemini CLI, Crush, Hermes Agent, Claude Code and OpenCode, each in its own setting. Every other agent gets the whole server.</li>
       <li><b>Sign-in.</b> A server that needs OAuth is signed in to once, in magpie. Agents then reach it through magpie’s gateway at <code>/mcp/&lt;name&gt;</code>.</li>
       <li><b>This computer only.</b> Turn off <span class="ui">Sync to your other computers</span> for a server that should stay here (<code>magpie library mcp local &lt;name&gt; on</code>).</li>
+      <li><b>Another command here.</b> For a synced server whose program sits elsewhere on this computer (a Mac and WSL), click <span class="ui">Use another command on this computer</span> under its command. Its name, agents and note still sync; your other computers keep running theirs (<code>magpie library mcp here &lt;name&gt; &lt;command…&gt;</code>).</li>
     </ul>
     <p>With the <a href="/docs/mcp-router">MCP router</a> on, each agent gets one server named <code>magpie</code> in place of these entries, and magpie runs each command server once for all of them. It is off by default.</p>
 
@@ -297,6 +298,7 @@ magpie library sync     # write it into the agents again</pre>
       <li>Anything it replaces goes to the backups first.</li>
     </ul>
     <p>Projects can get skills and MCP servers too, in the project’s own folders (such as <code>.claude/skills</code>, <code>.agents/skills</code>, <code>.mcp.json</code> or <code>.codex/config.toml</code>). From a terminal, <code>magpie library project add .</code> adds the folder you are in, <code>magpie library project skill add . pdf docx</code> gives it skills, <code>magpie library project skill rm . pdf</code> takes one away, and <code>magpie library project skills .</code> lists them.</p>
+    <p>A project can have instructions of its own as well, so your shared instructions keep only what holds everywhere. On the Instructions page, open a project under the shared text and write what only it needs. magpie puts it between its two marker lines in the file each agent reads in that project: <code>CLAUDE.md</code> for Claude Code, <code>AGENTS.md</code> for Codex, Cursor and most others, <code>GEMINI.md</code> for Gemini CLI. The rest of the file stays yours. A file magpie makes is kept out of git, and turning an agent off takes its part out again. From a terminal: <code>magpie library project instructions . text "Use pnpm here."</code>, and <code>… agents claude,codex</code> or <code>… agents none</code>.</p>
   </article>
 </main>
 

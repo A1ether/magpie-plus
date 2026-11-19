@@ -2,15 +2,16 @@ package gui
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/uilang"
 )
 
 // trayZh is the tray menu in Chinese; the page has its own words
 // (i18n.js), and these few are all the menu and the icon's tooltip show
 // (#301).
 var trayZh = map[string]string{
+	"Restart magpie":                       "重启 magpie",
 	"Open magpie plus":                     "打开 magpie plus",
 	"Balance board":                        "余额看板",
 	"Version %s":                           "版本 %s",
@@ -47,6 +48,7 @@ var trayZh = map[string]string{
 
 // trayZhTW is the tray menu in Traditional Chinese, with Taiwan's words.
 var trayZhTW = map[string]string{
+	"Restart magpie":                       "重新啟動 magpie",
 	"Open magpie plus":                     "開啟 magpie plus",
 	"Balance board":                        "餘額看板",
 	"Version %s":                           "版本 %s",
@@ -83,6 +85,7 @@ var trayZhTW = map[string]string{
 
 // trayJa is the tray menu in Japanese.
 var trayJa = map[string]string{
+	"Restart magpie":                       "magpie を再起動",
 	"Open magpie plus":                     "magpie plus を開く",
 	"Balance board":                        "残高ボード",
 	"Version %s":                           "バージョン %s",
@@ -119,6 +122,7 @@ var trayJa = map[string]string{
 
 // trayDe is the tray menu in German.
 var trayDe = map[string]string{
+	"Restart magpie":                       "magpie neu starten",
 	"Open magpie plus":                     "magpie plus öffnen",
 	"Balance board":                        "Salden",
 	"Version %s":                           "Version %s",
@@ -161,38 +165,12 @@ var trayWords = map[string]map[string]string{"zh": trayZh, "zh-TW": trayZhTW, "j
 // language; set by the process that has the tray.
 var onLang func()
 
-// trayLang is the language the tray menu is in, as the page picks its own:
-// the setting, or with "system" (or none) the system's: Traditional Chinese
-// for Taiwan, Hong Kong, Macau and any zh-Hant (zh_TW.UTF-8, zh-Hant-TW),
-// Simplified for any other zh, Japanese for any ja, German for any de.
-func trayLang(pref string, system func() string) string {
-	switch pref {
-	case "en", "zh", "zh-TW", "ja", "de":
-		return pref
-	}
-	switch sys := strings.ReplaceAll(strings.ToLower(system()), "_", "-"); {
-	case zhTraditional(sys):
-		return "zh-TW"
-	case strings.HasPrefix(sys, "zh"):
-		return "zh"
-	case strings.HasPrefix(sys, "ja"):
-		return "ja"
-	case strings.HasPrefix(sys, "de"):
-		return "de"
-	}
-	return "en"
-}
+// trayLang is the language the tray menu is in, as the page picks its own
+// (uilang.Pick).
+func trayLang(pref string, system func() string) string { return uilang.Pick(pref, system) }
 
-// zhTraditional says a lowercased, dashed system tag is Traditional
-// Chinese, as the page's sysLocale does.
-func zhTraditional(sys string) bool {
-	for _, p := range []string{"zh-tw", "zh-hk", "zh-mo", "zh-hant"} {
-		if sys == p || strings.HasPrefix(sys, p+"-") || strings.HasPrefix(sys, p+".") || strings.HasPrefix(sys, p+"@") {
-			return true
-		}
-	}
-	return false
-}
+// systemLang is the system's language (uilang.System).
+func systemLang() string { return uilang.System() }
 
 // notesLang is the language release notes are asked in for lang: there are
 // no German ones, so German asks for the English, and Traditional Chinese
@@ -229,7 +207,8 @@ func trayMenuLabels(lang, version, update string, paused bool) trayLabels {
 		open:    trayText(lang, "Open magpie plus"),
 		pause:   trayText(lang, "Pause Gateway"),
 		version: trayText(lang, "Version %s", version),
-		restart: trayText(lang, "Restart to Update"),
+		// no update waiting: magpie restarts as it is (restart.go)
+		restart: trayText(lang, "Restart magpie"),
 		quit:    trayText(lang, "Quit magpie plus"),
 	}
 	if update != "" {
@@ -249,27 +228,4 @@ func trayRestartNow(lang string, b gateway.Busy) string {
 		return trayText(lang, "Restart Now to Update (%d in flight)", n)
 	}
 	return trayText(lang, "Restart Now to Update")
-}
-
-// envLang is the language the environment names: the first of LC_ALL,
-// LC_MESSAGES, LANG and LANGUAGE set to one.
-func envLang(getenv func(string) string) string {
-	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"} {
-		if v := getenv(k); v != "" && v != "C" && v != "POSIX" && !strings.HasPrefix(v, "C.") {
-			return v
-		}
-	}
-	return ""
-}
-
-// firstAppleLang is the first entry `defaults read -g AppleLanguages`
-// prints: ( "zh-Hans-CN", "en-US" ), one to a line, quoted or not.
-func firstAppleLang(out string) string {
-	for _, line := range strings.Split(out, "\n") {
-		s := strings.Trim(strings.TrimSpace(line), `",`)
-		if s != "" && s != "(" && s != ")" {
-			return s
-		}
-	}
-	return ""
 }

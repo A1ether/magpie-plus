@@ -138,6 +138,17 @@ func TestWhatsNewKeyedByChannel(t *testing.T) {
 	if got := notesKey("zh"); got != "zh|stable" {
 		t.Fatalf("stable: %q", got)
 	}
+	s.UpdateChannel = settings.UpdateDaily
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := notesKey("zh"); got != "zh|daily" {
+		t.Fatalf("daily: %q", got)
+	}
+	s.UpdateChannel = settings.UpdateStable
+	if err := settings.Save(s); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("MAGPIE_NOTES_FEED", "http://127.0.0.1:1/") // never the real one
 	oldV := Version
 	Version = "0.1.100"
@@ -241,8 +252,11 @@ func TestStableUpToDateNamesNewest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asked.Add(1)
 		v := "0.1.13"
-		if r.URL.Query().Get("channel") == "stable" {
+		switch r.URL.Query().Get("channel") {
+		case "stable":
 			v = "0.1.11"
+		case "daily":
+			v = "0.1.12"
 		}
 		json.NewEncoder(w).Encode(update.Release{Version: v})
 	}))
@@ -283,9 +297,84 @@ func TestStableUpToDateNamesNewest(t *testing.T) {
 	if j := row(); j["state"] != "latest" || j["channel"] != "stable" || j["newest"] != nil {
 		t.Fatalf("stable, the newest installed: %v", j)
 	}
+	// Daily (fishmagic80 on X): the same, under its own name
+	channel(settings.UpdateDaily)
+	Version = "0.1.12"
+	if j := row(); j["state"] != "latest" || j["channel"] != "daily" || j["newest"] != "0.1.13" {
+		t.Fatalf("daily, 0.1.13 out: %v", j)
+	}
+	Version = "0.1.11"
+	if j := row(); j["state"] != "available" || j["latest"] != "0.1.12" || j["channel"] != "daily" {
+		t.Fatalf("daily, behind it: %v", j)
+	}
+	Version = "0.1.13"
 	channel("")
 	before := asked.Load()
 	if j := row(); j["state"] != "latest" || j["channel"] != nil || j["newest"] != nil || asked.Load()-before != 1 {
 		t.Fatalf("every version: %v, asked %d times", j, asked.Load()-before)
+	}
+}
+
+// A version newer than its channel's (realfxw on X): 0.1.4445 on Daily,
+// whose pick was 0.1.4395, with 0.1.4472 out on every version. The row
+// said "up to date on Daily", nothing was installed until Daily passed
+// 0.1.4445, and the user restarted again and again for an update that
+// wasn't coming. The answer now says it is ahead (the row: newer than
+// Daily's, it updates once Daily passes it), and still names the newest.
+// The same version as the channel's, or every version, isn't ahead.
+func TestUpdateAheadOfChannel(t *testing.T) {
+	sandboxHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v := "0.1.4472"
+		if r.URL.Query().Get("channel") == "daily" {
+			v = "0.1.4395"
+		}
+		json.NewEncoder(w).Encode(update.Release{Version: v, Notes: "- x"})
+	}))
+	defer srv.Close()
+	t.Setenv("MAGPIE_UPDATE_FEED", srv.URL)
+	oldV := Version
+	defer func() { Version = oldV }()
+	exe, err := update.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := updates
+	defer func() { updates = o }()
+	// as the page reads it
+	check := func(channel, v string) map[string]any {
+		t.Helper()
+		s := settings.Load()
+		s.UpdateChannel, s.NoAutoUpdate = channel, true
+		if err := settings.Save(s); err != nil {
+			t.Fatal(err)
+		}
+		Version = v
+		u := &updater{exe: exe}
+		u.self, _ = os.Stat(exe)
+		updates = u
+		u.check()
+		for range 1000 {
+			if j := u.json(); j.State != "checking" && j.State != "downloading" {
+				var m map[string]any
+				b, _ := json.Marshal(j)
+				if err := json.Unmarshal(b, &m); err != nil {
+					t.Fatal(err)
+				}
+				return m
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("still %s", u.json().State)
+		return nil
+	}
+	if j := check(settings.UpdateDaily, "0.1.4445"); j["state"] != "latest" || j["ahead"] != true || j["channel"] != "daily" || j["latest"] != "0.1.4395" || j["newest"] != "0.1.4472" {
+		t.Fatalf("ahead of Daily: %v", j)
+	}
+	if j := check(settings.UpdateDaily, "0.1.4395"); j["state"] != "latest" || j["ahead"] != nil || j["newest"] != "0.1.4472" {
+		t.Fatalf("Daily's own version: %v", j)
+	}
+	if j := check("", "0.1.4472"); j["state"] != "latest" || j["ahead"] != nil || j["channel"] != nil {
+		t.Fatalf("every version: %v", j)
 	}
 }

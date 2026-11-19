@@ -63,7 +63,13 @@ func ParseImport(link string) (Provider, error) {
 	if action != "import" {
 		return Provider{}, errorf("magpie://%s is not something magpie knows; links start magpie://import?", action)
 	}
-	q := u.Query()
+	return importFromQuery(u.Query())
+}
+
+// importFromQuery is ParseImport after the link's shape is known: q holds
+// the parameters in the list above.
+func importFromQuery(q url.Values) (Provider, error) {
+	var err error
 	get := func(k string) string { return strings.TrimSpace(q.Get(k)) }
 
 	var p Provider

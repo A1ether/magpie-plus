@@ -42,6 +42,7 @@ import (
 	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/netproxy"
+	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -93,6 +94,28 @@ var ErrClientRefused = errors.New("this server's sign-in admits only the apps it
 // Discord, where magpie said only "answered 403 and says nothing of a
 // sign-in"). The GUI has it in every language.
 var ErrTurnedAway = errors.New("a firewall in front of this server turned magpie's request away (403) before the server could offer a sign-in. It judges the network the request came from: try again on another network, or give magpie a proxy in Settings")
+
+// UnreachableError is a server magpie's first request to never got an
+// answer from: the connection was cut, refused or timed out, so the server
+// never said whether or how it signs in. It is the network between this
+// computer and Host, not the sign-in (CHENGJIAHEGOXIS on X read Notion's
+// "couldn't reach mcp.notion.com: Post …: EOF" as Notion having no
+// sign-in). Proxy is the proxy the request went through, redacted, "" when
+// it went direct; the GUI says it in every language.
+type UnreachableError struct {
+	Host, Proxy string
+	Err         error
+}
+
+func (e *UnreachableError) Error() string {
+	via := "directly, with no proxy"
+	if e.Proxy != "" {
+		via = "through the proxy " + e.Proxy
+	}
+	return fmt.Sprintf("couldn't reach %s (%s): %v", e.Host, via, e.Err)
+}
+
+func (e *UnreachableError) Unwrap() error { return e.Err }
 
 // ErrNoRegistration is a server whose sign-in doesn't let an app register
 // itself (GitHub's, 新v学员 on Discord): magpie signs in to it only as an
@@ -647,6 +670,17 @@ type meta struct {
 
 func origin(u *url.URL) string { return u.Scheme + "://" + u.Host }
 
+// WebURL is whether u is a web page a browser may be asked to open: http
+// or https, with a host. A sign-in page an MCP server names is opened by
+// the system, so anything else (file:, smb:, an app's scheme) is refused.
+func WebURL(u *url.URL) bool {
+	if u == nil || u.Host == "" || u.Opaque != "" {
+		return false
+	}
+	s := strings.ToLower(u.Scheme)
+	return s == "https" || s == "http"
+}
+
 // challenge is the server's 401: its resource metadata and the scope it
 // asks for, from WWW-Authenticate.
 func challenge(h http.Header) (metadata, scope string) {
@@ -728,16 +762,34 @@ func discover(ctx context.Context, serverURL string) (meta, error) {
 	}
 	// ask it something, as an agent would: its 401 says where to sign in
 	body := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"` + protocolVersion + `","capabilities":{},"clientInfo":{"name":"magpie","version":"1"}}}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL, strings.NewReader(body))
-	if err != nil {
-		return meta{}, err
+	ask := func() (*http.Response, *http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL, strings.NewReader(body))
+		if err != nil {
+			return nil, nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("MCP-Protocol-Version", protocolVersion)
+		resp, err := Client.Do(req)
+		return resp, req, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("MCP-Protocol-Version", protocolVersion)
-	resp, err := Client.Do(req)
+	resp, req, err := ask()
+	if err != nil && req != nil && ctx.Err() == nil {
+		// Go doesn't send a POST again on its own when a kept-alive
+		// connection the server or a proxy had closed reads EOF: this one
+		// asks nothing of the account, so it is asked once more, on a
+		// new connection
+		resp, req, err = ask()
+	}
 	if err != nil {
-		return meta{}, fmt.Errorf("couldn't reach %s: %w", su.Host, err)
+		if req == nil {
+			return meta{}, err
+		}
+		via := ""
+		if p, perr := netproxy.Func(req); perr == nil && p != nil {
+			via = netproxy.Redact(p.String())
+		}
+		return meta{}, &UnreachableError{Host: su.Host, Proxy: via, Err: err}
 	}
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	resp.Body.Close()
@@ -907,7 +959,13 @@ func register(ctx context.Context, m meta, redirect string) (id, secret, method 
 		return "", "", "", ErrClientRefused
 	}
 	if resp.StatusCode/100 != 2 {
-		return "", "", "", fmt.Errorf("registering magpie with the server's sign-in failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(rb)))
+		// the reply is quoted with its secrets out: a registration's
+		// answer may carry a client_secret, and the error is shown and logged
+		said := strings.TrimSpace(string(redact.ScrubJSON(rb)))
+		if r := []rune(said); len(r) > 300 {
+			said = string(r[:300]) + "…"
+		}
+		return "", "", "", fmt.Errorf("registering magpie with the server's sign-in failed (%d): %s", resp.StatusCode, said)
 	}
 	var out struct {
 		ID     string `json:"client_id"`
@@ -1075,6 +1133,14 @@ func start(ctx context.Context, name, serverURL string, app *App, add *string) (
 	if err != nil {
 		ln.Close()
 		return State{}, fmt.Errorf("the authorization endpoint isn't a URL: %w", err)
+	}
+	if !WebURL(au) {
+		// the server's metadata names it, and the page is handed to the
+		// system to open: a file:, smb: or app link there would run or
+		// mount what the server chose (Windows opens it through
+		// url.dll's FileProtocolHandler)
+		ln.Close()
+		return State{}, fmt.Errorf("the authorization endpoint isn't a web page (%q)", m.AuthorizeURL)
 	}
 	aq := au.Query()
 	for k, v := range q {
@@ -1256,5 +1322,5 @@ func Cancel(id string) {
 func page(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Magpie</title><body style="font:15px -apple-system,system-ui,sans-serif;max-width:32em;margin:4em auto;padding:0 1em;color:#222">%s</body>`, html.EscapeString(msg))
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Magpie</title><body style="font:15px -apple-system,system-ui,sans-serif;max-width:32em;margin:4em auto;padding:0 1em">%s</body>`, html.EscapeString(msg))
 }

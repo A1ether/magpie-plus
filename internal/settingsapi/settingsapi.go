@@ -28,16 +28,16 @@ import (
 // written.
 var Keys = []string{
 	// Appearance
-	"theme", "colorblind", "reduceMotion", "noBird", "lang", "uiFont", "codeFont",
+	"theme", "accent", "colorblind", "reduceMotion", "noBird", "lang", "uiFont", "codeFont",
 	// the tray, the Dock and this computer
 	"tray", "dock", "dockWindow", "dockNever", "lightweight", "keepAwake", "keepAwakeDisplay",
-	"noWSLAgents", "sessionTerminal", "signInLinkOnly", "quitNoAsk", "restoreOnQuit",
+	"noWSLAgents", "sessionTerminal", "signInLinkOnly", "quitNoAsk", "restoreOnQuit", "name",
 	// the menu bar's allowance cards
-	"trayUsages", "trayUsage", "trayUsageEvery", "trayNoLogos", "trayNoBird", "trayNoNumber", "trayPace", "trayNoCost", "trayWindows",
+	"trayUsages", "trayUsage", "trayUsageEvery", "trayNoLogos", "trayAnthropicMark", "trayNoBird", "trayNoNumber", "trayPace", "trayNoCost", "trayWindows",
 	// usage and alerts
-	"currency", "chineseUnits", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
+	"currency", "totalCurrency", "trayCurrency", "chineseUnits", "dayStart", "usageAlert", "balanceAlert", "resetReminder", "turnDoneAlert", "maskAlert",
 	// network
-	"proxy", "pluginProxy", "updateProxy",
+	"proxy", "pluginProxy", "updateProxy", "updateSource",
 	// privacy
 	"redact", "redactPersonal", "redactKinds", "redactWords", "redactWordsAnyCase", "redactWordsWhole", "redactShape",
 	"noStats", "noUsageStats", "otel",
@@ -45,8 +45,8 @@ var Keys = []string{
 	"codexWarmup", "claudeWarmup", "codexWarmAt", "claudeWarmAt", "codexWarmAts", "claudeWarmAts",
 	"workbuddyCheckin", "traeCheckin", "minimaxCheckin", "qoderCheckin", "checkinAt",
 	// models: replies, vision, images, search
-	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudePrintMode", "refusalRetries", "retryAfterCap",
-	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "classifyTimeout",
+	"replyModel", "noLoopGuard", "claudeLeanPrompt", "claudeNoExtraUsage", "claudePrintMode", "refusalRetries", "retryAfterCap",
+	"vision", "visionEffort", "imageGen", "videoGen", "imageTimeout", "imageResolution", "classifyTimeout",
 	// what every routing group does that says nothing of its own
 	"groupSink", "groupFirstToken", "groupPatience",
 	"searcher", "searcherThen", "searcherEffort", "searchFirst",
@@ -59,17 +59,22 @@ var Keys = []string{
 // checks a saved value against (a value outside them is refused there,
 // from the window as from the CLI). A setting's "" is its default.
 var Choices = map[string][]string{
-	"theme":          settings.Themes,
-	"lang":           settings.Langs,
-	"tray":           settings.Trays,
-	"currency":       settings.Currencies,
-	"codexWarmup":    {"off", "week", "all"},
-	"claudeWarmup":   {"off", "week", "all"},
-	"trayUsageEvery": ints(settings.TrayEvery),
-	"updateChannel":  {settings.UpdateStable},
-	"updateEvery":    ints(settings.UpdateEveries),
-	"searchFirst":    {settings.SearchFirstModel, settings.SearchFirstAPI},
-	"replyModel":     settings.ReplyModels,
+	"theme":           settings.Themes,
+	"lang":            settings.Langs,
+	"tray":            settings.Trays,
+	"currency":        settings.Currencies,
+	"totalCurrency":   settings.TotalCurrencies,
+	"trayCurrency":    settings.TotalCurrencies,
+	"codexWarmup":     {"off", "week", "all"},
+	"claudeWarmup":    {"off", "week", "all"},
+	"trayUsageEvery":  ints(settings.TrayEvery),
+	"dayStart":        {"0", "1", "2", "3", "4", "5", "6"},
+	"updateChannel":   {settings.UpdateStable, settings.UpdateDaily},
+	"updateSource":    {settings.UpdateSourceSite, settings.UpdateSourceGitHub},
+	"updateEvery":     ints(settings.UpdateEveries),
+	"searchFirst":     {settings.SearchFirstModel, settings.SearchFirstAPI},
+	"replyModel":      settings.ReplyModels,
+	"imageResolution": {"1K", "2K", "4K"},
 }
 
 func ints(v []int) []string {
@@ -213,6 +218,10 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	if _, sent := fields["imageTimeout"]; !sent {
 		in.ImageTimeout = cur.ImageTimeout
 	}
+	// nor the resolution an image is drawn at
+	if _, sent := fields["imageResolution"]; !sent {
+		in.ImageResolution = cur.ImageResolution
+	}
 	// nor how long a routing group's classifier is given (#2934)
 	if _, sent := fields["classifyTimeout"]; !sent {
 		in.ClassifyTimeout = cur.ClassifyTimeout
@@ -231,6 +240,15 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	// nor whether animations are stilled (#3813)
 	if _, sent := fields["reduceMotion"]; !sent {
 		in.ReduceMotion = cur.ReduceMotion
+	}
+	// nor the accent colour, which pages before it never sent
+	if _, sent := fields["accent"]; !sent {
+		in.Accent = cur.Accent
+	}
+	// nor what this magpie is called, which pages before it never sent
+	// (starballl on X): a page that leaves it out keeps it
+	if _, sent := fields["name"]; !sent {
+		in.Name = cur.Name
 	}
 	// nor whether the loading bird is kept off
 	if _, sent := fields["noBird"]; !sent {
@@ -267,6 +285,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	}
 	in.AgentOrder, in.AgentsHidden, in.AgentsShown, in.AgentsHere = cur.AgentOrder, cur.AgentsHidden, cur.AgentsShown, cur.AgentsHere
 	in.Window, in.WindowMaximised, in.WindowAt = cur.Window, cur.WindowMaximised, cur.WindowAt // the window's own, as it was last resized and moved
+	in.OnTop = cur.OnTop                                                                       // and pinned on top, by its title bar's pin (window/ontop)
 	// and what other pages keep here: which models an agent is shown, and
 	// everything the user said of a model anywhere else in the app, set on
 	// its own. The per-model maps are carried whole rather than named one
@@ -286,6 +305,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.CheckinOff = cur.CheckinOff           // set on its own (checkin-account)
 	in.PowerMeter = cur.PowerMeter           // the Balance page's sidecar switch, set on its own
 	settings.CarryPerModel(&in, &cur)
+	in.Wallpaper = cur.Wallpaper // set on its own (appearance/wallpaper)
 	in.LAN, in.LANKey = cur.LAN, cur.LANKey
 	in.LANKeyID = cur.LANKeyID
 	// Bark has its own route (bark); the page never sees its key
@@ -307,6 +327,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.Proxies = cur.Proxies                           // set on its own (proxies), the password never sent to the page
 	in.RequestArchive = cur.RequestArchive             // the Gateway page's, set on its own
 	in.RequestArchiveMaxMB = cur.RequestArchiveMaxMB   // in settings.json only
+	in.RequestArchiveMB = cur.RequestArchiveMB         // in settings.json only
 	in.ClaudeRunsMost = cur.ClaudeRunsMost             // magpie claude-code runs, or settings.json (#2956)
 	in.GatewayConversations = cur.GatewayConversations // Sessions' explicit recording consent
 	in.RedactRules = cur.RedactRules                   // the masking rules, set on their own
@@ -335,6 +356,8 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.UsageAgentsHidden = cur.UsageAgentsHidden
 	// and the allowance cards the Usage page's Overview leaves out, set there
 	in.UsageCardsHidden = cur.UsageCardsHidden
+	// and the quota rows of a card it leaves out, set there too
+	in.UsageWindowsHidden = cur.UsageWindowsHidden
 	// and the names models' usage is counted under (magpie model alias)
 	in.UsageAliases = cur.UsageAliases
 	// and the clears of usage made on the Usage page
@@ -345,11 +368,13 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.PlainNames, in.PlainOwnNames = cur.PlainNames, cur.PlainOwnNames
 	in.AgentSuffix = cur.AgentSuffix   // and each agent's own (agent-suffix)
 	in.BareModelIDs = cur.BareModelIDs // set on its own (bare-ids)
-	in.BusyLoad = cur.BusyLoad         // and so is this (busy-load)
+	in.BareModelIDsOnly = cur.BareModelIDsOnly
+	in.BusyLoad = cur.BusyLoad // and so is this (busy-load)
 	in.CodexAgentsV1 = cur.CodexAgentsV1
 	in.FullContext = cur.FullContext     // set on its own (full-context)
 	in.CompactAt = cur.CompactAt         // and so is the threshold
 	in.AgentCompacts = cur.AgentCompacts // and each agent's own (agent-compact)
+	in.AgentContexts = cur.AgentContexts // and the windows each is told (agent-contexts)
 	in.ContextCap = cur.ContextCap       // and the longest window of every model (context-cap)
 	in.ContextCapAll = cur.ContextCapAll // and whether it holds the user's own windows
 	// Codex's background compaction, set on its own (codex-async-compact)
@@ -358,20 +383,26 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 	in.DesktopLongest = cur.DesktopLongest
 	// and whether it runs in a folder of its own, set there too (#5671)
 	in.DesktopIsolated = cur.DesktopIsolated
+	// and whether its Code tab has a Claude Code folder of its own (#6459)
+	in.DesktopIsolatedClaude = cur.DesktopIsolatedClaude
+	in.DesktopIsolatedClaudeChosen = cur.DesktopIsolatedClaudeChosen
 	// and the Get started card put away, from the card itself
 	in.GuideHidden = cur.GuideHidden
 
 	in.CodexTitles = cur.CodexTitles             // set on its own (codex-titles)
 	in.CodexDescriptions = cur.CodexDescriptions // set on its own (codex-descriptions)
 	in.CodexPredictions = cur.CodexPredictions   // and codex-predictions
+	in.CodexSuggestions = cur.CodexSuggestions   // and codex-suggestions
 	// and so is the model Codex's auto-review runs on (codex-auto-review)
 	in.CodexAutoReview = cur.CodexAutoReview
 	// and the models Codex's and Desktop's subagents are put on, set
 	// in their Agents rows
 	in.CodexSubagentModel = cur.CodexSubagentModel
+	in.CodexOpen = cur.CodexOpen // set on its own (codex-open)
 	in.DesktopSubagentModel = cur.DesktopSubagentModel
 	in.DesktopGateway = cur.DesktopGateway     // Desktop's address, set in its row
 	in.CodexServiceTier = cur.CodexServiceTier // codex-service-tier
+	in.CodexClient = cur.CodexClient           // codex-client
 	// and the model DeepSeek Harness compacts on, set in its row
 	in.DshCompactModel = cur.DshCompactModel
 	// and the model Codex compacts on, set in its row
@@ -412,7 +443,7 @@ func Merge(body []byte, cur settings.Settings, web bool) (settings.Settings, err
 		}
 	}
 	if v := strings.TrimSpace(in.ImageGen); v != "" && v != "off" && v != cur.ImageGen {
-		if _, _, ok := provider.Resolve(v); !ok {
+		if gateway.DrawerMissingOf(v) != "" {
 			return in, fmt.Errorf("no model %s to generate images", v)
 		}
 	}

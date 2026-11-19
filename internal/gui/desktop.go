@@ -3,9 +3,10 @@ package gui
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/yetone/magpie/internal/lazyre"
 )
 
 // appName is what the desktop shows this app as: the menu bar's item, the
@@ -50,7 +51,7 @@ func appIdentity() string {
 }
 
 // bundlePlistID reads an app's bundle id out of its Info.plist.
-var bundlePlistID = regexp.MustCompile(`<key>CFBundleIdentifier</key>\s*<string>([^<]+)</string>`)
+var bundlePlistID = lazyre.New(`<key>CFBundleIdentifier</key>\s*<string>([^<]+)</string>`)
 
 // bundleIdentity is the CFBundleIdentifier of the .app this program runs
 // from, or "" when it runs from no bundle.

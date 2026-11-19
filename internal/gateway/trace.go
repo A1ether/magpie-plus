@@ -147,7 +147,7 @@ type Route struct {
 	// counts: streamed replies only (#196)
 	TTFT      int64 `json:"ttft,omitempty"`
 	FirstText int64 `json:"firstText,omitempty"`
-	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	// FirstReasoning: ms to the reply's first sign of reasoning, streamed or sealed (a reasoning delta, a reasoning item's or thinking block's start); 0 for none.
 	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
 	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
 	// Flow: the ms its content took to come (Call.Flow)
@@ -328,6 +328,7 @@ type Weighed struct {
 	Model    string  `json:"model"`
 	Fixed    string  `json:"fixed,omitempty"` // the effort the group's member it is of is fixed at
 	Fast     bool    `json:"fast,omitempty"`  // the group's member it is of is sent fast
+	Ultra    bool    `json:"ultra,omitempty"` // and Ultrafast, where the account offers it (Group.Ultra, an Ultrafast pick)
 	Routing  string  `json:"routing"`         // its provider's: "", order, rotate, usage
 	Fallback bool    `json:"fallback,omitempty"`
 	Shared   bool    `json:"shared,omitempty"` // its provider has more than one on
@@ -420,6 +421,10 @@ type Weighed struct {
 	// NoCredits: held at 100% (Capped), a Codex account the user set not
 	// to spend its credits once its allowance is used up
 	NoCredits bool `json:"noCredits,omitempty"`
+	// ExtraUsage: beside NoCredits, a Claude account held so as it is set
+	// not to spend extra usage, or its extra usage is at the cap set on
+	// its Usage credits (provider.ClaudeExtraUsage)
+	ExtraUsage bool `json:"extraUsage,omitempty"`
 	// Unread: held (Capped) by a careful provider as its usage can't be
 	// told, why: not read yet, the read failed, or too old near its cap
 	// (provider.Provider.CapCareful)
@@ -468,6 +473,10 @@ type Weighed struct {
 	// from Renews' biggest first: a row says the two together, so of one
 	// window, a Factory account's week and not its month (#1778)
 	UsedRenews *time.Time `json:"usedRenews,omitempty"`
+	// UsedWindow: the name of the window Used is the share of, when more
+	// than one counts the model: the row says it with the share, so a
+	// week's 41% isn't read as the five hours' (Wing8Aqua on X)
+	UsedWindow string `json:"usedWindow,omitempty"`
 	// Sunk: when it was rate limited with quota left, sending it to the
 	// back of an order that sinks (sink.go); nil when it didn't, or the
 	// order doesn't sink
@@ -512,7 +521,7 @@ type Try struct {
 	// (claude_entry.go). "" for a try that ran no Claude Code.
 	Entry    string `json:"entry,omitempty"`
 	EntryWhy string `json:"entryWhy,omitempty"`
-	// FirstReasoning is the start of paced visible reasoning, absent for hidden reasoning.
+	// FirstReasoning: ms to the reply's first sign of reasoning, streamed or sealed (a reasoning delta, a reasoning item's or thinking block's start); 0 for none.
 	FirstReasoning  int64 `json:"firstReasoning,omitempty"`
 	ReasoningHidden bool  `json:"reasoningHidden,omitempty"`
 	// Flow: the ms its content took to come (Call.Flow)
@@ -524,6 +533,10 @@ type Try struct {
 	Served  string `json:"served,omitempty"`
 	Swapped bool   `json:"swapped,omitempty"`
 	Routed  bool   `json:"routed,omitempty"`
+	// Wire: the model id it went out to the vendor under, when that is
+	// another than Model (usage.Record.Wire): a name the user gave the
+	// model upstream, or the variant a plugin picked
+	Wire string `json:"wire,omitempty"`
 	// Upstream: the provider an aggregator said answered behind it
 	// (OpenRouter's DeepInfra, Novita …)
 	Upstream string `json:"upstream,omitempty"`
@@ -609,7 +622,7 @@ type planned struct {
 }
 
 func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from provider.Protocol) Weighed {
-	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast,
+	w := Weighed{ID: c.rest, Provider: p.ID, Name: p.Name, Icon: p.Icon, Preset: p.Preset, Model: c.model, Fixed: c.effort, Fast: c.fast, Ultra: c.fast && c.ultra,
 		Routing: p.Routing, Fallback: fallback, Shared: c.rest != p.ID, Rank: c.rank, NoURL: c.noURL, Reserve: c.reserve, UseFirst: c.p.UseFirst}
 	switch {
 	case c.p.Account != nil:
@@ -640,6 +653,7 @@ func weighed(c candidate, p provider.Provider, wg weighing, fallback bool, from 
 			ur := l.fullest
 			w.UsedRenews = &ur
 		}
+		w.UsedWindow = l.fullestName
 		if l.of > 0 {
 			w.Amount, w.Limit, w.Unit = l.amount, l.of, l.unit
 		}
@@ -1169,9 +1183,11 @@ func swapped(sent, served string) bool { return usage.Swapped(sent, served) }
 // request's metadata. Unknown token counts have no price, including failures.
 // What the reply counted of earlier requests (Deferred) is priced as a tier
 // of its own before the request's, which stays last: the prompt is read
-// from the last (promptCounted), and is the request's own.
+// from the last (promptCounted), and is the request's own. So are the
+// calls its advisor made at the vendor, under the advisor's model
+// (advisorRouteUsage, #6977).
 func routeUsage(id, model string, u Usage) []RouteUsage {
-	var out []RouteUsage
+	out := advisorRouteUsage(id, u)
 	if d := u.Deferred; d != nil && d.Input+d.Output+d.CacheRead+d.CacheWrite > 0 {
 		out = append(out, RouteUsage{Provider: id, Model: model, Input: d.Input, Output: d.Output,
 			CacheRead: d.CacheRead, CacheWrite: d.CacheWrite, Reasoning: d.Reasoning})

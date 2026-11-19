@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/memory"
 	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/usage"
@@ -119,7 +121,7 @@ func TestMemoryMCPSharedAcrossAgents(t *testing.T) {
 	}
 	hits, _ := memory.Search(memory.Query{Text: "Answer in Chinese"})
 	m, _ := memory.Get(hits[0].ID)
-	if len(m.Sources) != 2 || m.Sources[1].Agent != usage.AgentOf("codex-mcp-client") {
+	if len(m.Sources) != 2 || m.Sources[1].Agent != "codex" {
 		t.Fatalf("sources %+v", m.Sources)
 	}
 }
@@ -187,8 +189,9 @@ func TestMemoryMCPSaysWhatItCantKnow(t *testing.T) {
 
 // Memory is this computer's user's, and its digest goes into the agents'
 // instructions here: another computer is turned away, shared or not, with
-// a gateway key or without, and so is a web page, one Settings lists too;
-// none of them reads, saves or forgets a memory.
+// a gateway key or without (one not let use memory: TestMemoryMCPToAKey
+// GivenIt), and so is a web page, one Settings lists too; none of them
+// reads, saves or forgets a memory.
 func TestMemoryMCPGuarded(t *testing.T) {
 	fresh(t)
 	t.Setenv("MAGPIE_ADDR", "")
@@ -244,9 +247,321 @@ func TestMemoryMCPGuarded(t *testing.T) {
 	}
 }
 
+// A gateway key the user let use Magpie Memory (access.Key.Memory,
+// Niapyaya on X: an agent on a remote machine adding memories) reads and
+// saves it from another computer while magpie is shared. Nothing else
+// from there does: no key, another key, the key once memory is taken
+// away, the key while magpie isn't shared, and the key sent by a web page
+// (an Origin, Sec-Fetch-Site, a browser's User-Agent).
+func TestMemoryMCPToAKeyGivenIt(t *testing.T) {
+	fresh(t)
+	t.Setenv("MAGPIE_ADDR", "")
+	t.Setenv("MAGPIE_PUBLIC_URL", "")
+	h := lanGuard(New().Handler())
+	if said, isErr := memPost(t, h, memorySaveTool, `{"text":"The user writes Go with any, never interface{}","kind":"preference","scope":"global"}`); isErr {
+		t.Fatal(said)
+	}
+	keys, secrets := newCaller(t, "Remote box", "Friend") // shares magpie
+	if _, err := access.Update("memory-key", access.Change{Key: keys[0].ID, Memory: true}); err != nil {
+		t.Fatal(err)
+	}
+	const there = "192.0.2.7:4000"
+	search := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{}}}`
+	save := func(text string) string {
+		return `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"memory_save","arguments":{"text":"` + text + `","kind":"preference","scope":"global"}}}`
+	}
+	refused := func(why string, hdr ...string) {
+		t.Helper()
+		for _, body := range []string{search, save("Refused " + why)} {
+			w := mcpPostTo(h, MemoryMCPPath, there, body, hdr...)
+			// no key is the share's own 401; the rest memory's 403
+			if (w.Code != http.StatusForbidden && w.Code != http.StatusUnauthorized) || strings.Contains(w.Body.String(), "interface") {
+				t.Fatalf("%s: %d %s", why, w.Code, w.Body.String())
+			}
+		}
+	}
+	key := []string{"Authorization", "Bearer " + secrets[0]}
+
+	// the key let use it reads and saves
+	got := readMCP(t, mcpPostTo(h, MemoryMCPPath, there, search, key...))
+	if got.Error != nil || got.Result.IsError || !strings.Contains(got.Result.Content[0].Text, "interface{}") {
+		t.Fatalf("search with the key: %+v", got)
+	}
+	got = readMCP(t, mcpPostTo(h, MemoryMCPPath, there, save("Deploys go through the staging box first"), key...))
+	if got.Error != nil || got.Result.IsError {
+		t.Fatalf("save with the key: %+v", got)
+	}
+	if said, isErr := memPost(t, h, memorySearchTool, `{}`); isErr || !strings.Contains(said, "staging box") {
+		t.Fatalf("what the remote agent saved isn't here: %v %s", isErr, said)
+	}
+
+	refused("no key")
+	refused("another key", "Authorization", "Bearer "+secrets[1])
+	refused("a page's Origin", append([]string{"Origin", "https://evil.example"}, key...)...)
+	refused("a page's Sec-Fetch-Site", append([]string{"Sec-Fetch-Site", "cross-site"}, key...)...)
+	refused("a browser", append([]string{"User-Agent", "Mozilla/5.0 (Macintosh) Chrome/140"}, key...)...)
+	// Node's fetch, the MCP SDK's own transport, sends Sec-Fetch-Mode
+	// (#5522): it is an agent, not a page
+	got = readMCP(t, mcpPostTo(h, MemoryMCPPath, there, search, append([]string{"Sec-Fetch-Mode", "cors", "User-Agent", "node"}, key...)...))
+	if got.Error != nil || got.Result.IsError {
+		t.Fatalf("Node's fetch with the key: %+v", got)
+	}
+
+	st := settings.Load()
+	st.LAN = false
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	refused("not shared", key...)
+	st.LAN = true
+	if err := settings.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := access.Update("memory-key", access.Change{Key: keys[0].ID}); err != nil {
+		t.Fatal(err)
+	}
+	refused("memory taken away", key...)
+
+	l, _, err := memory.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range l {
+		if strings.Contains(m.Text, "Refused") {
+			t.Fatalf("a refused caller saved %q", m.Text)
+		}
+	}
+}
+
 func TestRootDirs(t *testing.T) {
 	got := rootDirs([]string{"file:///Users/a/p", "https://x/y", "file:///C:/w/p"})
 	if len(got) != 2 || got[0] != filepath.FromSlash("/Users/a/p") {
 		t.Fatalf("dirs %q", got)
+	}
+}
+
+// A memory is dated in the reader's own zone, with the time and its
+// offset: at 04:30 in Shanghai on the 11th, UTC is still the 10th
+// (Norethcy on X). One saved before, stored as "…Z", reads the same way.
+// That a new one is stored in the local zone is memory's
+// TestSaveKeepsTheLocalZone.
+func TestMemorySearchDatesInLocalTime(t *testing.T) {
+	fresh(t)
+	oldZone := memoryZone
+	memoryZone = func() *time.Location { return time.FixedZone("CST", 8*3600) }
+	t.Cleanup(func() { memoryZone = oldZone })
+
+	old := `{"memories":[{"id":"m1","text":"Heavy tests run on mote","kind":"fact","scope":"global","origin":"agent","status":"active","created":"2026-11-10T20:30:00Z","updated":"2026-11-10T20:30:00Z"}]}`
+	if err := os.MkdirAll(filepath.Dir(memory.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(memory.Path(), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := lanGuard(New().Handler())
+	said, bad := memPost(t, h, memorySearchTool, `{"query":"mote"}`)
+	if bad || !strings.Contains(said, ", 2026-11-11T04:30+08:00: Heavy tests run on mote") {
+		t.Fatalf("an old UTC memory: %s", said)
+	}
+}
+
+// Codex over HTTP names itself at initialize alone (#6392, Norethcy on X):
+// its calls carry no agent's User-Agent, and an agent-scoped memory said
+// the server couldn't tell who it was. The session's initialize is kept,
+// and every name Codex goes by is Codex.
+func TestMemoryMCPAgentFromTheSessionsInitialize(t *testing.T) {
+	fresh(t)
+	h := lanGuard(New().Handler())
+	for _, name := range []string{"codex", "codex-mcp-client", "codex-tui"} {
+		init := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"` + name + `","version":"1"}}}`
+		w := mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", init, "User-Agent", "curl/8", "Accept", "application/json")
+		sid := w.Header().Get("Mcp-Session-Id")
+		if sid == "" {
+			t.Fatalf("%s: no session: %s", name, w.Body.String())
+		}
+		save := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_save","arguments":{"kind":"procedure","scope":"agent","text":"only for ` + name + `"}}}`
+		w = mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", save, "User-Agent", "curl/8", "Accept", "application/json", "Mcp-Session-Id", sid)
+		if m := readMCP(t, w); m.Result.IsError || !strings.Contains(m.Result.Content[0].Text, "only for you") {
+			t.Fatalf("%s: %s", name, w.Body.String())
+		}
+	}
+	// another client's session is not Codex's, and none still can't tell
+	w := mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_save","arguments":{"scope":"agent","text":"x"}}}`, "User-Agent", "curl/8", "Accept", "application/json", "Mcp-Session-Id", "magpie-other")
+	if m := readMCP(t, w); !m.Result.IsError || !strings.Contains(m.Result.Content[0].Text, "which agent") {
+		t.Fatalf("unknown session: %s", w.Body.String())
+	}
+	// what Codex's stdio client saved as its client name earlier is still found
+	old, kind, text := "agent:codex-mcp-client", "procedure", "kept before the rename"
+	if _, _, err := memory.Save(memory.Input{Kind: &kind, Scope: &old, Text: &text}, memory.FromAgent, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if said, _ := memSend(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"kept before the rename"}}}`, "User-Agent", "curl/8", MemoryClientHeader, "codex"); !strings.Contains(said, "kept before the rename") {
+		t.Fatalf("earlier agent memory lost: %s", said)
+	}
+	if memoryAgent("codex-mcp-client") != "codex" || memoryAgent("claude-code") == "codex" {
+		t.Fatal("memoryAgent")
+	}
+}
+
+// A migration run from one project keeps memories for another and can
+// check where they went (#6392, Norethcy on X): memory_search and
+// memory_save take a project (a folder, absolute or under the caller's,
+// or a key memory knows), every answer names the agent and project it
+// used, and memory_context says who the caller is taken for and how.
+func TestMemoryMCPProjectArgumentAndContext(t *testing.T) {
+	fresh(t)
+	h := lanGuard(New().Handler())
+	d := t.TempDir()
+	here := gitRepo(t, filepath.Join(d, "organizer"), "https://github.com/someone/organizer.git")
+	target := gitRepo(t, filepath.Join(d, "target"), "https://github.com/someone/target.git")
+	codex := []string{MemoryClientHeader, "codex-mcp-client", MemoryCwdHeader, here}
+
+	said, bad := memPost(t, h, memorySaveTool, `{"text":"Builds run on mote","kind":"fact","project":`+quotedQuery(target)+`}`, codex...)
+	if bad || !strings.Contains(said, "this project (github.com/someone/target)") {
+		t.Fatalf("save into a folder's project: %s", said)
+	}
+	if all, _, _ := memory.All(); all[0].Scope != "project:github.com/someone/target" || all[0].Sources[0].Dir != target {
+		t.Fatalf("kept %+v", all[0])
+	}
+	// its key, and a folder relative to the caller's, name it too
+	if said, bad := memPost(t, h, memorySaveTool, `{"text":"Releases are tagged after a green run","kind":"procedure","project":"github.com/someone/target"}`, codex...); bad || !strings.Contains(said, "(github.com/someone/target)") {
+		t.Fatalf("save by key: %s", said)
+	}
+	if said, bad := memPost(t, h, memorySearchTool, `{"scope":"project","project":"../target"}`, codex...); bad || !strings.Contains(said, "Builds run on mote") || !strings.Contains(said, "Releases are tagged") || !strings.Contains(said, "(looked in: project github.com/someone/target)") {
+		t.Fatalf("search by relative folder: %s", said)
+	}
+	// the caller's own project has none of them, and says which it is
+	if said, _ := memPost(t, h, memorySearchTool, `{"scope":"project"}`, codex...); strings.Contains(said, "mote") || !strings.Contains(said, "project github.com/someone/organizer") {
+		t.Fatalf("own project: %s", said)
+	}
+	if said, _ := memPost(t, h, memorySearchTool, `{"query":"mote"}`, codex...); !strings.Contains(said, "Nothing remembered matches") || !strings.Contains(said, "(looked in: everywhere, project github.com/someone/organizer, agent codex)") {
+		t.Fatalf("all, here: %s", said)
+	}
+	// what can't be: an unknown project, a project with another scope
+	for args, want := range map[string]string{
+		`{"text":"x","project":` + quotedQuery(filepath.Join(d, "nowhere")) + `}`: "isn't a folder",
+		`{"text":"x","project":"nothing-like-it"}`:                                "neither a folder here nor a project memory knows",
+		`{"text":"x","scope":"global","project":"target"}`:                        "goes with scope project",
+		`{"text":"x","scope":"agent","project":"../target"}`:                      "goes with scope project",
+	} {
+		if said, bad := memPost(t, h, memorySaveTool, args, codex...); !bad || !strings.Contains(said, want) {
+			t.Fatalf("%s: %v %s", args, bad, said)
+		}
+	}
+
+	// memory_context: the agent and the project, how each was found
+	w := mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_context","arguments":{}}}`, append(codex, "Accept", "application/json")...)
+	var res struct {
+		Result struct {
+			Content []struct{ Text string } `json:"content"`
+			Context struct {
+				Agent   struct{ ID, From string }
+				Project struct {
+					Key, Scope, Folder, From string
+				}
+				Scopes []string
+			} `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("%v: %s", err, w.Body.String())
+	}
+	ctx := res.Result.Context
+	if ctx.Agent.ID != "codex" || !strings.Contains(ctx.Agent.From, "initialize") || ctx.Project.Key != "github.com/someone/organizer" || ctx.Project.Folder != here || ctx.Project.From != "the folder the client runs in" ||
+		strings.Join(ctx.Scopes, " ") != "global project:github.com/someone/organizer agent:codex agent:codex-mcp-client" || !strings.Contains(res.Result.Content[0].Text, "Agent: codex") {
+		t.Fatalf("context: %s", w.Body.String())
+	}
+	said, bad = memPost(t, h, memoryContextTool, `{"project":"target"}`, codex...)
+	if bad || !strings.Contains(said, "Project: github.com/someone/target (target), from the project argument") {
+		t.Fatalf("context in another project: %s", said)
+	}
+	// nothing known: it says so, and how to make it known
+	if said, bad := memPost(t, h, memoryContextTool, `{}`, "User-Agent", "curl/8"); bad || !strings.Contains(said, "Agent: unknown") || !strings.Contains(said, "Project: none") {
+		t.Fatalf("context of no one: %s", said)
+	}
+	// the tool is listed, read-only
+	w = mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "Accept", "application/json")
+	if !strings.Contains(w.Body.String(), `"name":"memory_context"`) || strings.Count(w.Body.String(), `"project":{`) != 3 {
+		t.Fatalf("tools: %s", w.Body.String())
+	}
+}
+
+// A rule of a project that keeps its own instruction files is pointed
+// there when saved, so memory and the project's files don't drift apart
+// (flying_crp on X): a project memory, and a rule kept for everyone that
+// may hold here alone. A preference, and a project with no such file,
+// get no note. The save tool's description says the same, and neither
+// names this app nor a vendor.
+func TestMemorySavePointsProjectRulesToItsFiles(t *testing.T) {
+	fresh(t)
+	h := lanGuard(New().Handler())
+	d := t.TempDir()
+	kept := gitRepo(t, filepath.Join(d, "kept"), "https://github.com/someone/kept.git")
+	if err := os.WriteFile(filepath.Join(kept, "AGENTS.md"), []byte("# Notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bare := gitRepo(t, filepath.Join(d, "bare"), "https://github.com/someone/bare.git")
+	in := func(dir string) []string {
+		return []string{MemoryClientHeader, "codex-mcp-client", MemoryCwdHeader, dir}
+	}
+	note := "This project keeps its own instructions in AGENTS.md"
+	said, bad := memPost(t, h, memorySaveTool, `{"text":"Run tests with -race","kind":"rule","scope":"project"}`, in(filepath.Join(kept, "src"))...)
+	if bad || !strings.HasPrefix(said, "Remembered") || !strings.Contains(said, note) {
+		t.Fatalf("a project rule where AGENTS.md is: %s", said)
+	}
+	said, _ = memPost(t, h, memorySaveTool, `{"text":"Releases go out on Tuesdays","kind":"fact"}`, in(kept)...)
+	if !strings.Contains(said, note) {
+		t.Fatalf("a project fact where AGENTS.md is: %s", said)
+	}
+	said, _ = memPost(t, h, memorySaveTool, `{"text":"Commit messages in English","kind":"rule"}`, in(kept)...)
+	if !strings.Contains(said, "everywhere") || !strings.Contains(said, "If this holds only in this project, it belongs in the project's own AGENTS.md") {
+		t.Fatalf("a rule for everyone saved in a project with AGENTS.md: %s", said)
+	}
+	for _, c := range []struct{ args, dir string }{
+		{`{"text":"Answer in Chinese","kind":"preference"}`, kept},
+		{`{"text":"Run tests with -count=1","kind":"rule","scope":"project"}`, bare},
+		{`{"text":"Keep diffs small","kind":"rule"}`, bare},
+	} {
+		if said, _ := memPost(t, h, memorySaveTool, c.args, in(c.dir)...); strings.Contains(said, "instructions in") || strings.Contains(said, "belongs in") {
+			t.Errorf("%s in %s: %s", c.args, filepath.Base(c.dir), said)
+		}
+	}
+	w := mcpPostTo(h, MemoryMCPPath, "127.0.0.1:50000", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, "Accept", "application/json")
+	var list struct {
+		Result struct {
+			Tools []struct{ Name, Description string }
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	var desc string
+	for _, tl := range list.Result.Tools {
+		if tl.Name == memorySaveTool {
+			desc = tl.Description
+		}
+		for _, name := range []string{"magpie", "openai", "anthropic", "codex"} {
+			if strings.Contains(strings.ToLower(tl.Description), name) {
+				t.Errorf("%s's description names %s", tl.Name, name)
+			}
+		}
+	}
+	if !strings.Contains(desc, "belongs in that project's own instruction files or docs") || !strings.Contains(desc, "across projects") {
+		t.Fatalf("memory_save's description: %s", desc)
+	}
+}
+
+// A memory the user wrote in several lines reaches an agent in them, the
+// lines after the first indented under it, so the next memory listed is
+// still told apart (_meouwu on X: the line breaks were run together).
+func TestMemorySearchKeepsTheLines(t *testing.T) {
+	fresh(t)
+	if _, _, err := memory.Save(memory.Input{Text: ptr("Release steps:\n1. tag the commit\n2. push the tag by name"), Kind: ptr(memory.Procedure), Scope: ptr(memory.Global)}, memory.FromUser, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	h := lanGuard(New().Handler())
+	said, bad := memPost(t, h, memorySearchTool, `{"query":"release steps"}`)
+	if bad || !strings.Contains(said, ": Release steps:\n  1. tag the commit\n  2. push the tag by name\n") {
+		t.Fatalf("memory_search said %q", said)
 	}
 }

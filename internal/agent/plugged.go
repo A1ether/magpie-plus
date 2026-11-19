@@ -509,7 +509,10 @@ func plugged(at place, p *agentplug.Agent) *Agent {
 		in := map[string]any{
 			"gateway": map[string]any{"url": at.gw(), "v1": at.v1(), "key": gk},
 			"models":  models,
-			"agent":   map[string]any{"id": id, "config": f.path},
+			// magpie's decision models, apart from the chat models agents
+			// offer for a conversation (pluggedDecisionModels)
+			"decisionModels": pluggedDecisionModels(id),
+			"agent":          map[string]any{"id": id, "config": f.path},
 		}
 		if bf != nil {
 			in["agent"].(map[string]any)["base"] = bf.path
@@ -524,8 +527,9 @@ func plugged(at place, p *agentplug.Agent) *Agent {
 		}
 		kvs := merged(out, d.Merge)
 		if only {
-			// nothing written would read as connected all the same
-			if len(out) == 0 {
+			// nothing written would read as connected all the same; a key
+			// connect returned under merge is written too (kvs)
+			if len(out) == 0 && len(kvs) == 0 {
 				return fmt.Errorf("%s: connect returned no keys to write", plugin.Name(p.Spec))
 			}
 		} else {

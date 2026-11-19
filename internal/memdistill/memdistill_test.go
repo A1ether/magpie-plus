@@ -205,6 +205,12 @@ func TestWhatIsSent(t *testing.T) {
 			t.Errorf("sent: %q", w)
 		}
 	}
+	// a project's rules are left to its own files (flying_crp on X)
+	for _, w := range []string{"A rule or convention of one project belongs in the project's own instruction files and docs", "Never keep an item that disagrees with what the project's files say", "what the project's instruction files or docs say"} {
+		if !strings.Contains(sys, w) {
+			t.Errorf("the instructions lack %q", w)
+		}
+	}
 	for _, w := range []string{"magpie", "claude", "codex", "openai", "anthropic", "gpt", "gemini"} {
 		if strings.Contains(strings.ToLower(sys+strings.Split(user, "Conversation:")[0]), w) {
 			t.Errorf("names %q", w)
@@ -518,4 +524,34 @@ func TestStopEndsTheRun(t *testing.T) {
 	if res, err := ReadAll(context.Background(), "a/m", sb.complete); err != nil || res.Read != 14 {
 		t.Fatalf("%+v %v", res, err)
 	}
+}
+
+// Switched off, the background reads ask no model: picking one loads
+// every provider's models, the whole catalog. Switched on, they do.
+func TestKeepOffAsksNoModel(t *testing.T) {
+	newSandbox(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	asked := make(chan struct{}, 1)
+	done := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-done })
+	go func() {
+		defer close(done)
+		Keep(ctx, time.Millisecond, time.Millisecond, func() string {
+			select {
+			case asked <- struct{}{}:
+			default:
+			}
+			return "m/x"
+		}, nil)
+	}()
+	// a hundred rounds, at least, of 1ms each while off
+	select {
+	case <-asked:
+		t.Fatal("switched off, it asked for a model")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := change(func(s *State) { s.On = true }); err != nil {
+		t.Fatal(err)
+	}
+	<-asked // the round after, waited on and not timed
 }

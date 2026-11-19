@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -443,6 +444,7 @@ type args struct {
 	Quality    string   `json:"quality"`
 	Complexity string   `json:"complexity"`
 	Background string   `json:"background"`
+	Resolution string   `json:"resolution"`
 }
 
 // generate asks the gateway for the images and saves them; what it says is
@@ -457,6 +459,12 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 		return "", errors.New("prompt is required")
 	}
 	a.N = max(1, min(a.N, 4))
+	// the resolution the agent asks, else Settings › Images' unless the
+	// agent gave a size of its own
+	tier, err := gateway.ImageTier(a.Resolution, a.Size)
+	if err != nil {
+		return "", err
+	}
 	project := s.project(c)
 	// the images themselves, not URLs to fetch: the gateway fetches one a
 	// vendor keeps through the vendor's own proxy, the way it just reached
@@ -469,7 +477,7 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 		}
 		req["model"] = m
 	}
-	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "complexity": a.Complexity, "background": a.Background} {
+	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "complexity": a.Complexity, "background": a.Background, "resolution": tier} {
 		if v != "" {
 			req[k] = v
 		}
@@ -525,10 +533,13 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 	if len(out.Data) == 0 {
 		return "", errors.New("no image came back")
 	}
+	// the reply's bytes are the images' base64 a second time: what is read
+	// from here is the strings parsed out of them, each dropped once decoded
+	defer debug.FreeOSMemory()
 	// an image that was drawn, and paid for, is never dropped unsaid: one
 	// that can't be had is answered by where the vendor keeps it, beside
 	// those saved (#1576)
-	var saved, revised, lost []string
+	var saved, revised, lost, pixels []string
 	for i, d := range out.Data {
 		img, mt := []byte(nil), d.Mime
 		switch {
@@ -537,6 +548,7 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 				lost = append(lost, fmt.Sprintf("image %d came back broken: %v", i+1, err))
 				continue
 			}
+			out.Data[i].B64 = ""
 		case d.URL != "":
 			if img, mt, err = gateway.FetchImage(context.Background(), gateway.PublicClient(), d.URL); err != nil {
 				lost = append(lost, fmt.Sprintf("image %d was drawn but couldn't be downloaded (%v); the vendor keeps it at %s for a while: download it from there", i+1, err, d.URL))
@@ -561,6 +573,7 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 			return "", err
 		}
 		saved = append(saved, path)
+		pixels = append(pixels, gateway.PixelsOf(img))
 		if d.Revised != "" {
 			revised = append(revised, d.Revised)
 		}
@@ -573,6 +586,7 @@ func (s *server) generate(raw json.RawMessage, used *string, c caller) (string, 
 	for _, p := range saved {
 		fmt.Fprintf(&b, "- %s\n", shownPath(p))
 	}
+	b.WriteString(gateway.PixelsSaid(pixels, gateway.AskedTier(tier, a.Size)))
 	for _, l := range lost {
 		fmt.Fprintf(&b, "Not saved: %s\n", l)
 	}

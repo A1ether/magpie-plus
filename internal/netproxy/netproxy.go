@@ -4,10 +4,11 @@
 // that is only reachable through a proxy hangs until the agent gives up.
 //
 // In order: the proxy set in magpie's settings (or "direct" for none), the
-// usual *_PROXY variables, then the system's proxy (macOS network
-// settings, Windows Internet Options). Loopback is never proxied, nor,
-// unless a provider has a proxy of its own, a host on the user's own
-// network (lan.go).
+// usual *_PROXY variables, the system's proxy (macOS network settings,
+// Windows Internet Options, a Linux desktop's GNOME gsettings or KDE
+// kioslaverc), then the login shell's *_PROXY (shell.go). Loopback is
+// never proxied, nor, unless a provider has a proxy of its own, a host on
+// the user's own network (lan.go).
 package netproxy
 
 import (
@@ -123,10 +124,10 @@ func Held(ctx context.Context) error {
 // "direct", #1522) goes through its own provider's proxy, never the one
 // it was made under. A provider's leave not to check its certificate
 // (WithUncheckedTLS) goes the same way: it is the outer provider's, and
-// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1) and its own
-// TLS identity (WithClientCert).
+// dropped here, and so is its ask for HTTP/1.1 (WithHTTP1), its own
+// TLS identity (WithClientCert) and its host rules (WithResolve).
 func With(ctx context.Context, choice string) context.Context {
-	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil && clientCertOf(ctx) == nil {
+	if choice = strings.TrimSpace(choice); choice == "" && choiceOf(ctx) == "" && uncheckedOf(ctx) == nil && http1Of(ctx) == nil && clientCertOf(ctx) == nil && resolveOf(ctx) == nil {
 		return ctx
 	}
 	ctx = context.WithValue(ctx, choiceKey{}, choice)
@@ -139,6 +140,9 @@ func With(ctx context.Context, choice string) context.Context {
 	if http1Of(ctx) != nil {
 		ctx = context.WithValue(ctx, http1Key{}, map[string]bool(nil))
 	}
+	if resolveOf(ctx) != nil {
+		ctx = context.WithValue(ctx, resolveKey{}, map[string][]string(nil))
+	}
 	return ctx
 }
 
@@ -149,7 +153,7 @@ func With(ctx context.Context, choice string) context.Context {
 // vendors without). Its "" leaves ctx as it is, so they follow the
 // global proxy as every other request does.
 func Downloads(ctx context.Context) context.Context {
-	if c := strings.TrimSpace(settings.Load().PluginProxy); c != "" {
+	if c := strings.TrimSpace(settings.Shared().PluginProxy); c != "" {
 		return With(ctx, c)
 	}
 	return ctx
@@ -158,7 +162,7 @@ func Downloads(ctx context.Context) context.Context {
 // EnvDownloads is Env for a program magpie starts to download plugins
 // (bun add and update, git): plugin downloads' proxy (Downloads), or,
 // when that names none, Env's.
-func EnvDownloads(env []string) []string { return EnvWith(settings.Load().PluginProxy, env) }
+func EnvDownloads(env []string) []string { return EnvWith(settings.Shared().PluginProxy, env) }
 
 // Choice is the proxy ctx names (With), "" when it names none — for a CLI
 // run on a provider's behalf, whose *_PROXY is set from it (EnvWith).
@@ -199,6 +203,13 @@ func forChoice(c string) (*url.URL, error) {
 // its transport.
 var HTTP1 func(u *url.URL) bool
 
+// Elsewhere sends a request that Go's own TLS can't carry another way,
+// before a transport of Dispatch's dials it: ok false leaves the request
+// to the transport. internal/provider sets it for OpenCode Zen's free
+// tier, which answers a client that isn't Bun's 429 (zen_bun.go); nil
+// leaves every request to its transport.
+var Elsewhere func(req *http.Request) (res *http.Response, ok bool, err error)
+
 // Dispatch is a RoundTripper sending a request through base, unless its
 // context names a provider's own proxy (With): then through a clone of
 // base kept for that proxy alone. Connections are so reused among the
@@ -215,8 +226,10 @@ var HTTP1 func(u *url.URL) bool
 // said not to check (WithUncheckedTLS) through a clone kept for that
 // host alone (uncheckTLS), and one made with a provider's own TLS
 // identity (WithClientCert) through a clone kept for it (clientTLS). A host whose IPv6 is taken but goes nowhere
-// is dialed over IPv4 (v4Fallback).
+// is dialed over IPv4 (v4Fallback), and one on the user's own network
+// is given lanDial to connect (lanDialCap).
 func Dispatch(base *http.Transport) http.RoundTripper {
+	lanDialCap(base)
 	v4Fallback(base)
 	return &dispatch{base: base, own: map[route]*http.Transport{}, moved: Watch()}
 }
@@ -239,16 +252,29 @@ type route struct {
 	h1        bool
 	unchecked string
 	client    string // clientRoute
+	resolve   string // resolveRoute
 }
 
 func (d *dispatch) RoundTrip(req *http.Request) (*http.Response, error) {
+	if f := Elsewhere; f != nil {
+		if res, ok, err := f(req); ok {
+			return res, err
+		}
+	}
 	if d.moved() {
 		d.CloseIdleConnections()
 	}
-	r := route{choice: Resolve(choiceOf(req.Context())), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req), client: clientRoute(req)}
+	r := route{choice: Resolve(choiceOf(req.Context())), h1: HTTP1 != nil && HTTP1(req.URL) || http1Asked(req) || overHTTP1(req.Context()) || h2BrokenFor(req), unchecked: uncheckedHost(req), client: clientRoute(req), resolve: resolveRoute(req)}
 	t := d.base
 	if r != (route{}) {
 		t = d.transport(r)
+	}
+	if r.resolve != "" {
+		// a rule is for a connection made direct: through a proxy, the
+		// proxy connects to the name itself
+		if u, err := proxyOf(t, req); err == nil && u == nil {
+			req = req.WithContext(context.WithValue(req.Context(), directKey{}, true))
+		}
 	}
 	res, err := v4Retry(t, req)
 	if r.h1 {
@@ -326,6 +352,9 @@ func (d *dispatch) transport(r route) *http.Transport {
 	if r.client != "" {
 		clientTLS(t, r.client)
 	}
+	if r.resolve != "" {
+		resolveTLS(t, r.resolve)
+	}
 	if isCalm(d.base) {
 		// a clone shares base's HTTP/2 connections, dialled through
 		// base's proxy, until it is given its own
@@ -363,7 +392,7 @@ func (d *dispatch) CloseIdleConnections() {
 
 // For is the proxy a request to u goes through; nil means direct.
 func For(u *url.URL) (*url.URL, error) {
-	switch s := strings.TrimSpace(settings.Load().Proxy); s {
+	switch s := strings.TrimSpace(settings.Shared().Proxy); s {
 	case "direct":
 		return nil, nil
 	case "":
@@ -374,7 +403,10 @@ func For(u *url.URL) (*url.URL, error) {
 		return p, err
 	}
 	sys := System()
-	if sys.URL == "" || bypassed(u.Hostname(), sys.Bypass) {
+	if sys.URL == "" {
+		return fromShell(u), nil
+	}
+	if bypassed(u.Hostname(), sys.Bypass) {
 		return nil, nil
 	}
 	return Parse(sys.URL)
@@ -400,7 +432,7 @@ func EnvWith(choice string, env []string) []string {
 	var bypass []string
 	s := strings.TrimSpace(choice)
 	if s == "" {
-		s = strings.TrimSpace(settings.Load().Proxy)
+		s = strings.TrimSpace(settings.Shared().Proxy)
 	}
 	if settings.IsProxyRef(s) {
 		// a saved proxy that is gone: the CLI goes nowhere, not direct
@@ -419,10 +451,12 @@ func EnvWith(choice string, env []string) []string {
 			}
 		}
 		sys := System()
-		if sys.URL == "" {
-			return env
-		}
 		p, bypass = sys.URL, sys.Bypass
+		if p == "" {
+			if p, bypass = shellProxy(); p == "" {
+				return env
+			}
+		}
 	default:
 		u, err := Parse(s)
 		if err != nil {
@@ -492,7 +526,7 @@ func Parse(s string) (*url.URL, error) {
 // Describe says, for the settings page, what a request to u would use.
 func Describe() (proxy, source string) {
 	defer func() { proxy = Redact(proxy) }()
-	switch s := strings.TrimSpace(settings.Load().Proxy); s {
+	switch s := strings.TrimSpace(settings.Shared().Proxy); s {
 	case "direct":
 		return "", "off"
 	case "":
@@ -505,6 +539,9 @@ func Describe() (proxy, source string) {
 	}
 	if sys := System(); sys.URL != "" {
 		return sys.URL, "system"
+	}
+	if p := fromShell(u); p != nil {
+		return p.String(), "environment"
 	}
 	return "", "none"
 }
@@ -521,6 +558,9 @@ func Redact(raw string) string {
 		return ""
 	}
 	if settings.IsProxyRef(raw) {
+		if a := sshShown(raw); a != "" {
+			return a
+		}
 		// a saved proxy shown as its address, with no login
 		u.User = nil
 		return u.String()
@@ -534,6 +574,18 @@ func Redact(raw string) string {
 		address = strings.TrimPrefix(address, "http://")
 	}
 	return address
+}
+
+// sshShown is how a saved SSH proxy (a reference) is shown: its server's
+// address, not the tunnel's on loopback; "" for any other proxy.
+func sshShown(ref string) string {
+	id := settings.ProxyID(ref)
+	for _, p := range settings.Shared().Proxies {
+		if p.ID == id && p.IsSSH() {
+			return strings.TrimSpace(p.URL)
+		}
+	}
+	return ""
 }
 
 // fromEnv is the proxy the environment names for u: HTTPS_PROXY or
@@ -703,4 +755,12 @@ func bypassed(host string, list []string) bool {
 		}
 	}
 	return false
+}
+
+// proxyOf is the proxy t sends req through, nil for none.
+func proxyOf(t *http.Transport, req *http.Request) (*url.URL, error) {
+	if t.Proxy == nil {
+		return nil, nil
+	}
+	return t.Proxy(req)
 }

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -76,6 +77,20 @@ func callerKeyRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, map[string]any{"keys": withLimits(keys), "accountNames": provider.AccountNames(), "accountGroups": accountGroupsJSON()})
 	})
+	// the subscription accounts' windows a key's limit can follow
+	// (ljayic on X): each one's 5 hours, week or month, from the cards as
+	// last read; an account not read yet is read meanwhile, waited for a
+	// few seconds at most
+	mux.HandleFunc("GET /api/caller-keys/account-windows", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer cancel()
+		out := provider.KeyWindows(ctx, time.Now())
+		if out == nil {
+			out = []provider.KeyWindow{}
+		}
+		writeJSON(w, map[string]any{"windows": out})
+	})
 	// the models a key may be held to (#882), and the accounts and keys
 	// (#905): the routing groups, then each provider's models, then its
 	// accounts and keys; a group the key names is its with every member
@@ -92,6 +107,31 @@ func callerKeyRoutes(mux *http.ServeMux) {
 				continue
 			}
 			out = append(out, keyModelJSON{ID: e.Provider.ID + "/" + e.Model, Name: cmp.Or(e.Name, e.Model), Provider: e.Provider.ID, ProviderName: cmp.Or(e.Provider.Name, e.Provider.ID)})
+		}
+		// the decision groups, after the chat groups: Catalog keeps them
+		// out as no agent chats with one, but the gateway gives a key
+		// naming one its models at /v1/systemone (serveDecisionGroup's
+		// groupGiven), so a key held to some models had no way to be let
+		// use one but All models (Kautism on Discord: a group of Clef and
+		// Jev, not in the key's list). Only those the gateway serves now:
+		// on, and the user's own while their groups are served.
+		groupsEnd := 0
+		for groupsEnd < len(out) && out[groupsEnd].Group {
+			groupsEnd++
+		}
+		for _, g := range provider.Groups() {
+			if g.Hidden || g.Disabled || !g.Decides() {
+				continue
+			}
+			if _, _, ok := provider.FindGroup(provider.GroupPrefix + g.ID); !ok {
+				continue
+			}
+			id := provider.GroupPrefix + g.ID
+			if slices.ContainsFunc(out, func(m keyModelJSON) bool { return strings.EqualFold(m.ID, id) }) {
+				continue
+			}
+			out = slices.Insert(out, groupsEnd, keyModelJSON{ID: id, Name: cmp.Or(g.Name, g.ID), Group: true, Decides: true})
+			groupsEnd++
 		}
 		// the models a routing group listing alone keeps out of the lists,
 		// each after its provider's: a key not given the group is listed

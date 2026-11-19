@@ -28,14 +28,14 @@ func init() { provider.ReckonHolds = WithWindowHolds }
 func WithWindowHolds(qs []provider.SubscriptionQuota, now time.Time) []provider.SubscriptionQuota {
 	since, ok := holdsSince(qs, now)
 	if !ok { // none can be reckoned: each one only says why
-		return windowHolds(qs, now, time.Time{}, nil, provider.Renames{}, nil, nil, func(func(Record)) {})
+		return carryHolds(windowHolds(qs, now, time.Time{}, nil, provider.Renames{}, nil, nil, func(func(Record)) {}), now)
 	}
 	s := readLogSnapshot()
 	hist := provider.QuotaHistories(since, "", "")
 	started := withRecordedWindowStarts(qs, hist, now)
 	dry := dryRuns(started, hist, now)
 	out := windowHolds(started, now, s.firstOwn, apiPricer(), provider.UsageRenames(), provider.SamePlanAccounts(), dry, func(fn func(Record)) { s.visit(since, fn) })
-	return withSpansOf(out, qs)
+	return carryHolds(withSpansOf(out, qs), now)
 }
 
 // holdsSince is the earliest start of a window that could be reckoned.
@@ -340,7 +340,7 @@ func baseRates(pr catalog.Price) catalog.Price {
 func apiPricer() func(Record) *catalog.Price {
 	st := settings.Load()
 	wires := st.Wires()
-	prices := map[[4]string]*catalog.Price{}
+	prices := map[[5]string]*catalog.Price{}
 	one := func(providerID, model string) *catalog.Price {
 		v, ok := provider.MakerPrice(model)
 		if !ok || v.Cost(1e6, 1e6, 0, 0) == 0 {
@@ -364,7 +364,8 @@ func apiPricer() func(Record) *catalog.Price {
 			served = ""
 		}
 		id := r.priceID()
-		k := [4]string{id, r.Model, served, r.Effort}
+		tier := r.billedTier()
+		k := [5]string{id, r.Model, served, r.Effort, r.tierKey(tier, served)}
 		if pr, ok := prices[k]; ok {
 			return pr
 		}
@@ -381,6 +382,8 @@ func apiPricer() func(Record) *catalog.Price {
 		if pr == nil && served != "" {
 			pr = one(id, served)
 		}
+		// a Fast call is worth Fast's API price (Pricer)
+		pr = tierPriced(pr, tier, r.Time, served, r.Model)
 		prices[k] = pr
 		return pr
 	}

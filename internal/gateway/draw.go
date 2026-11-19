@@ -85,7 +85,7 @@ const maxDrawings = 4
 // ImageGen while it resolves, else AutoDrawer's. None when it is off or no
 // provider draws.
 func drawer() (string, bool) {
-	switch v := settings.Load().ImageGen; v {
+	switch v := settings.Shared().ImageGen; v {
 	case "off":
 		return "", false
 	case "":
@@ -109,14 +109,24 @@ func Drawer() string {
 // when magpie can't find it any more, so that AutoDrawer's draws in its
 // place, as VisionMissing is Image recognition's. "" when none is named,
 // it is off, or it resolves.
-func DrawerMissing() string { return drawerMissing(settings.Load().ImageGen) }
+func DrawerMissing() string { return drawerMissing(settings.Shared().ImageGen) }
 
 // drawerMissing is v, an Image generation pick, when magpie can't draw
 // with it: pickedMissing's, and a routing group ("group/<id>", 7up6666 on
 // X) none of whose members draws any more.
+// DrawerMissingOf is drawerMissing: what Settings checks an Image
+// generation pick with before it saves it.
+func DrawerMissingOf(v string) string { return drawerMissing(v) }
+
 func drawerMissing(v string) string {
 	if !provider.IsGroupRef(v) {
-		return pickedMissing(v)
+		if v == "" || v == "off" {
+			return ""
+		}
+		if _, _, ok := resolveDrawing(v); ok {
+			return ""
+		}
+		return v
 	}
 	// a group of image models only is no model agents are offered, so
 	// Resolve doesn't take it: it is missing when none of it draws
@@ -172,6 +182,15 @@ func resolveDrawing(id string) (provider.Provider, string, bool) {
 		return provider.Resolve(id)
 	}
 	if strings.Contains(id, "/") {
+		if p, m, ok := provider.Resolve(id); ok {
+			return p, m, true
+		}
+		// an image model of a key kept for them: Select none serves no
+		// chat model, yet the key still draws (netube99 on X, minimax-cn)
+		pid, model, _ := strings.Cut(id, "/")
+		if p, err := provider.Find(pid); err == nil && p.On() && !p.DecideOnly() && drawsModel(*p, model) {
+			return *p, model, true
+		}
 		return provider.Resolve(id)
 	}
 	for _, p := range provider.All() {
@@ -540,9 +559,15 @@ func AutoDrawer() string {
 			cands = append(cands, c)
 		}
 	}
+	// the provider the pick is held to draws while it can (heldPick,
+	// auto_picks.go): a ChatGPT account added later doesn't take it over
+	held := heldPick(slotDrawer)
+	heldDraws := held != "" && slices.ContainsFunc(cands, func(c cand) bool {
+		return providerOfRef(c.ref) == held && !(c.gen && c.key.less(newest))
+	})
 	best, bestCost, bestDate := "", 0.0, ""
 	for _, c := range cands {
-		if c.gen && c.key.less(newest) {
+		if c.gen && c.key.less(newest) || heldDraws && providerOfRef(c.ref) != held {
 			continue
 		}
 		if c.gen && !c.priced && haveFamilyCost {
@@ -552,6 +577,7 @@ func AutoDrawer() string {
 			best, bestCost, bestDate = c.ref, c.cost, c.released
 		}
 	}
+	settlePick(slotDrawer, held, heldDraws, providerOfRef(best))
 	return best
 }
 
@@ -635,10 +661,23 @@ type drawing struct {
 	// text.
 	Extra map[string]any
 	Form  bool
+	// Tier is the resolution asked (1K, 2K, 4K; draw_tier.go): the
+	// request's resolution, or a tier given as size. "" for the model's own,
+	// as with a WIDTHxHEIGHT size, which is the size asked
+	Tier string
+}
+
+// shape is d's size without a tier given as size: a ratio, WIDTHxHEIGHT,
+// or "".
+func (d drawing) shape() string {
+	if tierOf(d.Size) != "" {
+		return ""
+	}
+	return d.Size
 }
 
 // drawingRead are the fields of an images request magpie reads itself.
-var drawingRead = []string{"model", "prompt", "size", "quality", "complexity", "background", "output_format", "response_format", "n", "image", "image[]", "images", "mask", "markup", "user"}
+var drawingRead = []string{"model", "prompt", "size", "quality", "complexity", "background", "output_format", "response_format", "n", "image", "image[]", "images", "mask", "markup", "user", "resolution"}
 
 // extraOf keeps v as one of d's Extra under k, unless magpie reads k.
 func (d *drawing) extraOf(k string, v any) {
@@ -952,6 +991,7 @@ func vendorSaid(text string) string {
 // edits take.
 func readDrawing(r *http.Request) (drawing, error) {
 	var d drawing
+	var resolution string
 	ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if ct == "multipart/form-data" {
 		if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -968,6 +1008,7 @@ func readDrawing(r *http.Request) (drawing, error) {
 		d.N, _ = strconv.Atoi(get("n"))
 		d.Complexity = get("complexity")
 		d.Form = true
+		resolution = get("resolution")
 		for k := range f.Value {
 			d.extraOf(k, get(k))
 		}
@@ -1013,11 +1054,15 @@ func readDrawing(r *http.Request) (drawing, error) {
 			Mask           json.RawMessage `json:"mask"`
 			Markup         json.RawMessage `json:"markup"`
 			ResponseFormat string          `json:"response_format"`
+			Resolution     any             `json:"resolution"`
 		}
 		if err := json.Unmarshal(body, &in); err != nil {
 			return d, fmt.Errorf("the request isn't JSON: %v", err)
 		}
 		d = drawing{Model: in.Model, Prompt: in.Prompt, Size: in.Size, Quality: in.Quality, Complexity: strings.TrimSpace(in.Complexity), Background: in.Background, Format: in.Format, Want: strings.TrimSpace(in.ResponseFormat), N: in.N}
+		if in.Resolution != nil {
+			resolution = fmt.Sprint(in.Resolution)
+		}
 		var all map[string]any
 		json.Unmarshal(body, &all)
 		for k, v := range all {
@@ -1055,6 +1100,9 @@ func readDrawing(r *http.Request) (drawing, error) {
 	// and takes no prompt
 	if strings.TrimSpace(d.Prompt) == "" && (d.Extra["layer_decomposition"] == nil || len(d.Images) == 0) {
 		return d, errors.New("say what to draw in prompt")
+	}
+	if err := d.settleTier(resolution); err != nil {
+		return d, err
 	}
 	if d.N <= 0 {
 		d.N = 1
@@ -1293,26 +1341,42 @@ func (s *Server) drawOnAccounts(ctx context.Context, r *http.Request, p provider
 
 // restDrawer rests the image model on c's account when the account is out
 // of its quota for it, until the reset the refusal names (Antigravity's
-// "Your quota will reset after 3h19m30s.", resetsAt), else quotaRest. Only
-// the model rests (restID), never the account: its text models draw on
-// allowances of their own. The next drawing then asks the accounts that
-// still have it first (restLast in candidates), and a chat on that image
-// model goes past it too, where before every drawing asked the spent
-// account first again (01huadalang on Discord). A failure of any other
-// kind rests nothing, as before: a key, a request refused, a vendor down;
-// nor does any on a provider set never to rest for a limit (LimitRestOff).
+// "Your quota will reset after 3h19m30s.", resetsAt), or a ChatGPT
+// account's image window's as its headers told it (imageHeardOf), else
+// quotaRest; a 429 the headers said came with that window full is out of
+// quota whatever its words. Only the model rests (restID), never the
+// account: its text models draw on allowances of their own. The next
+// drawing then asks the accounts that still have it first (restLast in
+// candidates), and a chat on that image model goes past it too, where
+// before every drawing asked the spent account first again (01huadalang
+// on Discord). A failure of any other kind rests nothing, as before: a
+// key, a request refused, a vendor down; nor does any on a provider set
+// never to rest for a limit (LimitRestOff).
 func restDrawer(c candidate, code int, msg string) {
-	if c.p.Account == nil || c.p.LimitRestOff || c.model == "" || failure(code, []byte(msg)) != failQuota {
+	if c.p.Account == nil || c.p.LimitRestOff || c.model == "" {
 		return
 	}
 	now := time.Now()
+	agent, user := c.p.Account.UsageAgent(), c.p.Account.User
+	// the image window a ChatGPT account's reply told (#6412)
+	heard, told := imageHeardOf(agent, user, now)
+	told = told && strings.HasPrefix(c.model, codexDrawerFamily)
+	if failure(code, []byte(msg)) != failQuota && (code != http.StatusTooManyRequests || !told || heard.Used < 100) {
+		// a 429 whose words read as a short rate limit ("image limit
+		// reached") is the allowance's when the headers said it is full
+		return
+	}
 	r := Rest{Why: failQuota, Status: code, By: "quota", Key: c.restID(), Model: c.model,
-		agent: c.p.Account.UsageAgent(), user: c.p.Account.User, said: msg}
+		agent: agent, user: user, said: msg}
 	d := quotaRest
 	if w := resetsAt([]byte(msg), now); w > 0 {
 		d, r.By = min(w, longestQuota), "resets"
+	} else if told {
+		// a ChatGPT image refusal whose body names no reset: its window's,
+		// as the reply's headers told it, not quotaRest's guess
+		d, r.By = min(heard.Resets.Sub(now), longestQuota), "resets"
 	}
-	r.Until = now.Add(d)
+	r.Until = onWall(now.Add(d))
 	restingUntil.Lock()
 	restingUntil.m[r.Key] = r.Until
 	restingUntil.note[r.Key] = r
@@ -1359,8 +1423,24 @@ func accountRefusedDrawing(code int) bool {
 }
 
 // draw asks the provider for d's images, on the API model draws on there,
-// and on the other when that one isn't served.
+// and on the other when that one isn't served. A drawing asked at a tier
+// the vendor turns away is asked once more at the model's own size
+// (draw_tier.go), so a resolution set in Settings never keeps an image
+// from being drawn.
 func (s *Server) draw(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
+	out, code, err := s.drawAsked(ctx, p, model, d)
+	if tierRefused(d, code, err) && ctx.Err() == nil {
+		plain := d
+		plain.Tier = ""
+		plain.Size = d.shape()
+		if o, c, e := s.drawAsked(ctx, p, model, plain); e == nil {
+			return o, c, e
+		}
+	}
+	return out, code, err
+}
+
+func (s *Server) drawAsked(ctx context.Context, p provider.Provider, model string, d drawing) (drawn, int, error) {
 	// the headers the user gave the image model
 	ctx = provider.WithModel(ctx, p.ID, model)
 	if drawsWorkBuddy(p) {
@@ -1480,6 +1560,11 @@ func (s *Server) sendWith(ctx context.Context, p provider.Provider, method, url,
 		return nil, 502, err
 	}
 	defer res.Body.Close()
+	if drawsCodex(p) {
+		// the image window a ChatGPT account's reply tells, a 200's too,
+		// for its card and a refusal's rest (#6412)
+		heardCodexImage(p, res.Header)
+	}
 	answered := time.Since(asked)
 	rb := &tracked{r: res.Body, last: time.Now()}
 	b, err := io.ReadAll(io.LimitReader(rb, 256<<20))
@@ -1523,9 +1608,9 @@ func (t *tracked) Read(p []byte) (int, error) {
 func stalledAt(got []byte, quiet time.Duration) string {
 	where := fmt.Sprintf("%s had come, and nothing more for the last %s", sizeOf(len(got)), quiet.Round(time.Second))
 	switch {
-	case bytes.Contains(got, []byte(`"b64_json"`)):
+	case bodyHas(got, `"b64_json"`):
 		return "it was sending the image itself as b64_json; " + where
-	case bytes.Contains(got, []byte(`"url"`)):
+	case bodyHas(got, `"url"`):
 		return "it was answering with the image's url, not the image; " + where
 	}
 	return "what came doesn't yet say whether the image was coming as a url or as b64_json; " + where
@@ -1619,12 +1704,10 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	var body []byte
 	var ct, url string
 	m := strings.ToLower(model)
+	size := imagesAPISize(p, model, d)
 	if drawsGrok(p) {
 		// Grok's Imagine API takes an aspect ratio, not a size or a quality
-		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N, "response_format": "b64_json"}
-		if ar := aspectAmong(d.Size, grokAspects); ar != "" {
-			req["aspect_ratio"] = ar
-		}
+		req := grokImagesReq(model, d)
 		if len(d.Images) > 0 {
 			var imgs []map[string]string
 			for _, pic := range d.Images {
@@ -1638,12 +1721,16 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		body, _ = json.Marshal(req)
 	} else if len(d.Images) == 0 {
 		req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
-		fields := map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format}
+		fields := map[string]string{"size": size, "quality": d.Quality, "background": d.Background, "output_format": d.Format}
 		if drawsCopilot(p) {
 			// Copilot CLI sends model, prompt, size and quality
-			fields = map[string]string{"size": d.Size, "quality": d.Quality}
+			fields = map[string]string{"size": size, "quality": d.Quality}
 		} else if !drawsCodex(p) {
 			fields["complexity"] = d.Complexity
+		}
+		if p.IsRemoteMagpie() {
+			// the other magpie sends it on in its vendor's own field
+			fields["resolution"] = d.Tier
 		}
 		for k, v := range fields {
 			if v != "" {
@@ -1664,7 +1751,7 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 		if senseNovaDrawer(m) {
 			req["response_format"] = "b64_json"
 		}
-		for k, v := range map[string]string{"size": d.Size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
+		for k, v := range map[string]string{"size": size, "quality": d.Quality, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
 				req[k] = v
 			}
@@ -1685,13 +1772,16 @@ func (s *Server) drawImages(ctx context.Context, p provider.Provider, model stri
 	} else {
 		var buf bytes.Buffer
 		mw := multipart.NewWriter(&buf)
-		for k, v := range map[string]string{"model": model, "prompt": d.Prompt, "n": strconv.Itoa(d.N), "size": d.Size, "quality": d.Quality, "complexity": d.Complexity, "background": d.Background, "output_format": d.Format} {
+		for k, v := range map[string]string{"model": model, "prompt": d.Prompt, "n": strconv.Itoa(d.N), "size": size, "quality": d.Quality, "complexity": d.Complexity, "background": d.Background, "output_format": d.Format} {
 			if v != "" {
 				mw.WriteField(k, v)
 			}
 		}
 		if strings.Contains(m, "dall-e") {
 			mw.WriteField("response_format", "b64_json")
+		}
+		if p.IsRemoteMagpie() && d.Tier != "" {
+			mw.WriteField("resolution", d.Tier)
 		}
 		field := "image"
 		if len(d.Images) > 1 {
@@ -1750,21 +1840,7 @@ func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, 
 	if d.Markup != nil {
 		return drawn{}, http.StatusBadRequest, errors.New("OpenRouter's images API does not support a markup layer")
 	}
-	req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
-	for k, v := range map[string]string{"quality": d.Quality, "background": d.Background, "output_format": d.Format} {
-		if v != "" {
-			req[k] = v
-		}
-	}
-	openRouterSize(req, d.Size)
-	if len(d.Images) > 0 {
-		refs := make([]map[string]any, 0, len(d.Images))
-		for _, pic := range d.Images {
-			refs = append(refs, map[string]any{"type": "image_url", "image_url": map[string]string{"url": pic.dataURL()}})
-		}
-		req["input_references"] = refs
-	}
-	body, _ := json.Marshal(req)
+	body, _ := json.Marshal(openRouterImagesReq(model, d))
 	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/images"
 	b, code, err := s.send(ctx, p, url, "application/json", body, true)
 	if err != nil {
@@ -1773,14 +1849,39 @@ func (s *Server) drawOpenRouterImages(ctx context.Context, p provider.Provider, 
 	return readImagesAnswer(p, url, b, code)
 }
 
+// openRouterImagesReq is d as OpenRouter's Image API takes it.
+func openRouterImagesReq(model string, d drawing) map[string]any {
+	req := map[string]any{"model": model, "prompt": d.Prompt, "n": d.N}
+	for k, v := range map[string]string{"quality": d.Quality, "background": d.Background, "output_format": d.Format} {
+		if v != "" {
+			req[k] = v
+		}
+	}
+	openRouterSize(req, model, d.shape())
+	if d.Tier != "" && takesImageSize(model) {
+		// OpenRouter's own field for it (512 to 4K); a model that draws at
+		// 1K alone is asked at its own
+		req["resolution"] = d.Tier
+	}
+	if len(d.Images) > 0 {
+		refs := make([]map[string]any, 0, len(d.Images))
+		for _, pic := range d.Images {
+			refs = append(refs, map[string]any{"type": "image_url", "image_url": map[string]string{"url": pic.dataURL()}})
+		}
+		req["input_references"] = refs
+	}
+	return req
+}
+
 // openRouterSize puts an images API size into req as OpenRouter's Image API
 // takes it. Pixels ("1536x1024") go as aspect_ratio, and as resolution
 // when they ask for more than 1K: no endpoint of its /images/models lists
 // size among what it takes, and Sourceful's Riverflow V2 and xAI's answer
 // a pixel size with 400 "does not support explicit pixel sizes. Use
 // resolution and aspect_ratio instead." A ratio ("16:9") is an
-// aspect_ratio, and a tier ("2K", "auto") goes as the size it is.
-func openRouterSize(req map[string]any, size string) {
+// aspect_ratio, and a tier ("2K", "auto") goes as the size it is. A
+// model that draws at 1K alone (takesImageSize) is sent no resolution.
+func openRouterSize(req map[string]any, model, size string) {
 	size = strings.TrimSpace(size)
 	if size == "" {
 		return
@@ -1795,7 +1896,7 @@ func openRouterSize(req map[string]any, size string) {
 		return
 	}
 	req["aspect_ratio"] = r
-	if t := imageSizeOf(size); t != "" {
+	if t := imageSizeOf(size); t != "" && takesImageSize(model) {
 		req["resolution"] = t
 	}
 }
@@ -1984,7 +2085,7 @@ func extOf(mimeType string) string {
 func drawPrompt(d drawing) string {
 	var b strings.Builder
 	b.WriteString(d.Prompt)
-	if r := aspectOf(d.Size); r != "" {
+	if r := aspectOf(d.shape()); r != "" {
 		fmt.Fprintf(&b, "\n\nAspect ratio: %s.", r)
 	}
 	if d.Background == "transparent" {
@@ -2002,8 +2103,8 @@ func (s *Server) drawChat(ctx context.Context, p provider.Provider, model string
 	}
 	req := map[string]any{"model": model, "stream": false, "modalities": []string{"image", "text"},
 		"messages": []map[string]any{{"role": "user", "content": content}}}
-	if r := aspectOf(d.Size); r != "" {
-		req["image_config"] = map[string]string{"aspect_ratio": r}
+	if c := chatImageConfig(model, d); c != nil {
+		req["image_config"] = c
 	}
 	body, _ := json.Marshal(req)
 	url := strings.TrimRight(p.Base(provider.Chat), "/") + "/chat/completions"
@@ -2100,12 +2201,12 @@ func (s *Server) drawGemini(ctx context.Context, p provider.Provider, model stri
 		parts = append(parts, map[string]any{"inlineData": map[string]string{"mimeType": pic.Mime, "data": base64.StdEncoding.EncodeToString(pic.Data)}})
 	}
 	cfg := map[string]any{"responseModalities": []string{"TEXT", "IMAGE"}}
-	if c := imageConfigOf(model, d.Size); c != nil {
+	if c := imageConfigOf(model, d.shape(), d.Tier); c != nil {
 		cfg["imageConfig"] = c
 	}
 	body, _ := json.Marshal(map[string]any{"contents": []map[string]any{{"role": "user", "parts": parts}}, "generationConfig": cfg})
 	base := strings.TrimSuffix(strings.TrimRight(p.Base(provider.Chat), "/"), "/openai")
-	url := base + "/models/" + model + ":generateContent"
+	url := base + "/models/" + provider.GeminiModelPath(model) + ":generateContent"
 	return s.eachDrawing(d.N, func() (drawn, int, error) {
 		b, code, err := s.send(ctx, p, url, "application/json", body, false)
 		if err != nil {
@@ -2177,7 +2278,7 @@ func (s *Server) drawCodeAssist(ctx context.Context, p provider.Provider, model 
 		parts = append(parts, Part{Kind: Image, MediaType: pic.Mime, Data: base64.StdEncoding.EncodeToString(pic.Data)})
 	}
 	req := &Request{Messages: []Message{{Role: "user", Parts: parts}}, draws: true}
-	if c := imageConfigOf(model, d.Size); c != nil {
+	if c := imageConfigOf(model, d.shape(), d.Tier); c != nil {
 		// the size and shape the images API asked, in the field a Gemini
 		// client's own imageConfig arrives in, which buildCodeAssistSent
 		// puts in generationConfig
@@ -2294,22 +2395,46 @@ func imageSizeOf(size string) string {
 
 // imageConfigOf is the imageConfig an images API size asks a Gemini image
 // model to draw at: the ratio the size is nearest, with the imageSize
-// beside it when the size asks past the model's 1K default. Gemini 2.x
-// image models draw at 1K only and Google documents imageSize for the
-// Gemini 3 image models, so a 2.x model is sent the ratio alone, as
-// before. nil for none.
-func imageConfigOf(model, size string) map[string]string {
+// beside it when a tier is asked, or the size asks past the model's 1K
+// default, and the model takes one (takesImageSize). nil for none.
+func imageConfigOf(model, size, tier string) map[string]string {
 	c := map[string]string{}
 	if r := aspectOf(size); r != "" {
 		c["aspectRatio"] = r
 	}
-	if s := imageSizeOf(size); s != "" && !strings.HasPrefix(strings.ToLower(model), "gemini-2") {
-		c["imageSize"] = s
+	if tier == "" {
+		tier = imageSizeOf(size)
+	}
+	if tier != "" && takesImageSize(model) {
+		c["imageSize"] = tier
 	}
 	if len(c) == 0 {
 		return nil
 	}
 	return c
+}
+
+// takesImageSize is whether a model can be asked for an imageSize past 1K.
+// A Gemini image model that draws at 1K alone refuses one: Gemini 2.x's
+// (Google documents imageSize for the Gemini 3 image models only), and a
+// Lite's, which answers 2K with 400 "Image size 2K is not supported for
+// this model" (gemini-3.1-flash-lite-image, Nano Banana 2 Lite: Dani
+// Ariyanto on Discord). Such a model is sent the ratio alone and draws at
+// its own 1K, as it does with no size asked. The id is read as Google
+// names it, without models/ or a relay's google/; any other model is
+// asked as before.
+func takesImageSize(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	switch {
+	case strings.HasPrefix(m, "gemini-2"):
+		return false
+	case strings.HasPrefix(m, "gemini-") || strings.HasPrefix(m, "nano-banana"):
+		return !strings.Contains(m, "lite")
+	}
+	return true
 }
 
 // grokAspects are the aspect ratios Grok's Imagine API takes.

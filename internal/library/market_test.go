@@ -233,16 +233,22 @@ func TestFeaturedSkills(t *testing.T) {
 	t.Cleanup(func() { popular.Lock(); popular.list = nil; popular.Unlock() })
 
 	list, _ := MarketSkills("")
-	if len(list) != 3 || list[0].ID != "magpie-community/plugins/magpie-setup" || list[1].ID != "magpie-community/plugins/magpie-quota" || list[2].ID != "o/r/pdf" {
+	if len(list) != 4 || list[0].ID != "magpie-community/plugins/magpie-setup" || list[1].ID != "magpie-community/plugins/magpie-quota" || list[2].ID != "magpie-community/plugins/magpie-sessions" || list[3].ID != "o/r/pdf" {
 		t.Fatalf("market: %+v", list)
 	}
-	for _, m := range list[:2] {
+	for _, m := range list[:3] {
 		if !m.Official || !m.Featured || m.Description == "" || m.Icon != gh("magpie-community") || !offered(m.Icon) {
 			t.Fatalf("magpie's own: %+v", m)
 		}
 	}
 	if list, _ := MarketSkills("quota"); len(list) == 0 || list[0].SkillID != "magpie-quota" || slices.ContainsFunc(list, func(m MarketSkill) bool { return m.SkillID == "magpie-setup" }) {
 		t.Fatalf("quota: %+v", list)
+	}
+	// yansheng1003 on X: an agent searches every agent's sessions
+	for _, q := range []string{"sessions", "conversation"} {
+		if list, _ := MarketSkills(q); len(list) == 0 || list[0].SkillID != "magpie-sessions" {
+			t.Fatalf("%s: %+v", q, list)
+		}
 	}
 	// Leyuu_5 on X: an agent sets magpie up; found by what a user searches
 	for _, q := range []string{"setup", "routing", "gateway key"} {
@@ -501,6 +507,40 @@ func TestMemoryServerInDiscover(t *testing.T) {
 	}
 }
 
+// Magpie Sessions is offered beside magpie's other servers but, since an
+// agent given it reads the user's other conversations, only to the agents
+// picked for it; it acts as this computer's user, and a copy at another
+// path is the same server.
+func TestSessionsServerInDiscover(t *testing.T) {
+	sandbox(t)
+	list, err := MarketServers("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(list, func(m MarketServer) bool { return m.ID == sessionsServerName && m.OptIn }) {
+		t.Fatalf("%s not in Discover as opt-in: %+v", sessionsServerName, list)
+	}
+	ok(t)(InstallServer(sessionsServerName, nil, []string{"claude"}))
+	l, err := load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := l.server(sessionsServerName)
+	if s == nil || strings.Join(s.Agents, ",") != "claude" || !filepath.IsAbs(s.Command) || strings.Join(s.Args, " ") != "mcp sessions" {
+		t.Fatalf("added as %+v", s)
+	}
+	if !hereOnly(s) {
+		t.Fatal("the sessions server is offered to other computers")
+	}
+	other := Server{Name: "said", Transport: "stdio", Command: "/opt/other/magpie", Args: []string{"mcp", "sessions"}}
+	if serverKey(&other) != serverKey(s) {
+		t.Fatalf("keys %q and %q", serverKey(&other), serverKey(s))
+	}
+	if mem := (Server{Name: "m", Transport: "stdio", Command: s.Command, Args: []string{"mcp", "memory"}}); serverKey(&mem) == serverKey(s) {
+		t.Fatal("memory and sessions share a key")
+	}
+}
+
 // EverMe and Nowledge Mem are offered as memory sources, each added in one
 // step with what its own docs give (OipsAnthony on X).
 func TestThirdPartyMemoryServers(t *testing.T) {
@@ -521,5 +561,29 @@ func TestThirdPartyMemoryServers(t *testing.T) {
 	if e == nil || e.Command != "npx" || strings.Join(e.Args, " ") != "-y @everme/memory-mcp" ||
 		e.Env["EVERME_API_BASE"] != "https://api.everme.evermind.ai" || e.Env["EVERME_AGENT_TOKEN"] != "evt_x" || e.Env["EVERME_AGENT_ID"] != "agt_1" {
 		t.Fatalf("everme %+v", e)
+	}
+}
+
+func TestReaKeepsItsOwnLogo(t *testing.T) {
+	const logo = "https://rea.tools/assets/favicon.svg"
+	i := slices.IndexFunc(popularServers(), func(m MarketServer) bool { return m.ID == "io.github.morluto/rea" })
+	if i < 0 || popularServers()[i].Icon != logo {
+		t.Fatalf("crawl icon: %v", i)
+	}
+	var r registryServer
+	if err := json.Unmarshal([]byte(`{"name":"io.github.morluto/rea","repository":{"url":"https://github.com/morluto/rea"},"packages":[{"registryType":"npm","identifier":"rea-agents","transport":{"type":"stdio"}}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := fromRegistry(&r)
+	if !ok || m.Icon != logo {
+		t.Fatalf("live icon: %q %v", m.Icon, ok)
+	}
+	s := popularServers()[i].server
+	l := &Library{Icons: map[string]string{serverKey(&s): gh("morluto")}}
+	if got := serverIcon(l, &s); got != logo {
+		t.Fatalf("added with the avatar: %q", got)
+	}
+	if !offered(logo) {
+		t.Fatal("not offered")
 	}
 }
