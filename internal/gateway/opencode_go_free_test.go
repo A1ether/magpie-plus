@@ -4,6 +4,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -168,7 +170,13 @@ func TestOpenCodeGoOwnFreeModelGetsNothingOfOpenCodes(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	a = asked()
-	if len(a) != 3 || !strings.Contains(a[2].body, "Prefer /tmp/opencode") || !strings.Contains(a[2].body, provider.OpenCodeStub) {
+	// the path the environment block names is the temp dir with its links
+	// followed, which is /private/var/... on macOS
+	tmp := os.TempDir()
+	if real, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = real
+	}
+	if len(a) != 3 || !strings.Contains(a[2].body, "Prefer "+filepath.Join(tmp, "opencode")) || !strings.Contains(a[2].body, provider.OpenCodeStub) {
 		t.Fatalf("Zen's free model at Zen: %+v", a)
 	}
 }
