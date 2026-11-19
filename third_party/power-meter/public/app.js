@@ -3,11 +3,38 @@ import './vendor/qrcode.js';
 
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
+/**
+ * 后台刷新期间的前端轮询间隔。
+ *
+ * 后端 `/api/summary?wait=0` 立即返回当前已知快照并继续取数；这里按 900ms
+ * 轮询进度，让卡片逐张出现。只读内存聚合，不会额外请求上游。
+ */
+const REFRESH_POLL_MS = 900;
+
+/**
+ * 上一份成功载荷的本地缓存：浏览器刷新时先同步画出来，不必等接口回来。
+ * 只在 `refreshing !== true` 时写入，避免把「取数中」的半成品固化到下次首屏。
+ */
+const PAYLOAD_STORAGE_KEY = ['power', 'meter', 'payload', 'v1'].join('.');
+/** 超过这个时长的缓存不再展示（避免一打开就是几天前的余额） */
+const PAYLOAD_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 /** 每张卡片默认展示的积分数，其余折叠 */
 const VISIBLE_LOTS = 3;
 
 /** 合并卡片里默认展示的账号数，其余折叠 */
 const VISIBLE_ENTRIES = 2;
+
+/** 主题偏好存 localStorage 的键：必须与 public/index.html 头部内联脚本保持一致 */
+const THEME_STORAGE_KEY = 'power-meter.theme';
+/** 三态选择：auto 跟随系统 / light 强制浅色 / dark 强制深色 */
+const THEME_CHOICES = ['auto', 'light', 'dark'];
+/** 按钮文案与图标：label 显示「选择」，title 里再补充当前实际生效的主题 */
+const THEME_META = {
+  auto: { label: '自动', icon: '◐', title: '跟随系统主题' },
+  light: { label: '浅色', icon: '☀', title: '浅色主题' },
+  dark: { label: '深色', icon: '☾', title: '深色主题' },
+};
 
 /**
  * 来源文案：upstream = 平台明细接口，local = 本地采样兜底，
@@ -67,8 +94,19 @@ const state = {
   sort: 'expiry',
   query: '',
   autoRefresh: true,
+  /**
+   * 主题选择：light / dark / auto（真值同步写在 <html data-theme-choice>，不另存一份）。
+   * 初始值取浅色，与 index.html 首帧脚本的兜底一致；bindShell 里会按 localStorage 覆写。
+   */
+  themeChoice: 'light',
   timer: null,
   loading: false,
+  /** 后台刷新轮询定时器（0 = 未排）；与 autoRefresh 的 5 分钟定时器是两件事 */
+  pollTimer: 0,
+  /** 请求在飞时用户又点了「立即刷新」：落地后补一轮强制刷新 */
+  forceQueued: false,
+  /** 当前画面是否来自 localStorage 缓存（首屏加速），只影响文案与徽标 */
+  dataCached: false,
   /**
    * 已被显式「显示」或「复制」过的托管密钥明文（key = provider#accountId#field）。
    * 只活在内存里，手动刷新时清空——否则凭证轮换后这页还举着旧值。
@@ -92,6 +130,15 @@ const state = {
    * 登录各是一个会话，按钮按 provider+method 匹配自己的状态。
    */
   login: null,
+  /**
+   * 每日签到状态：`GET /api/checkin` 的结果。
+   * 与 summary 分开拉取，签到结果不进入余额快照，避免污染缓存口径。
+   */
+  checkin: null,
+  /** 正在签到的账号键（provider|accountId），用于按钮 loading 态 */
+  checkinBusy: new Set(),
+  /** 签到弹窗里的提示（一键签到的汇总 / 错误） */
+  checkinMessage: '',
   /**
    * 管理区处于展开状态的卡片（key = cardKeyOf）。
    * 登录轮询会整张重建卡片，展开态必须存在 state 里，否则二维码面板会被收起来。
@@ -118,6 +165,11 @@ const state = {
    * 反复重建这个子菜单，展开态写进 DOM 会被下一次渲染重置。
    */
   navPlatformsOpen: false,
+  /**
+   * 「最先到期」清单是否已展开到全部（默认只放前 MAX_VISIBLE_EXPIRY 笔）。
+   * 存 state 而不是 DOM：自动刷新会整块重建，展开态写在 DOM 上会被重置。
+   */
+  expiryExpanded: false,
   /** 当前 scrollspy 命中的导航目标（data-target 值）；null 表示还没算过 */
   activeTarget: null,
   /** 命令面板当前这一屏的命令（见 buildCommands），index 是选中项 */
@@ -135,7 +187,8 @@ const LOGIN_POLL_MS = 1_500;
 
 const els = {
   summary: document.getElementById('summary'),
-  alert: document.getElementById('alert'),
+  expirySummary: document.getElementById('expiry-summary'),
+  expiryToggle: document.getElementById('expiry-toggle'),
   grid: document.getElementById('grid'),
   timeline: document.getElementById('timeline'),
   diagnostics: document.getElementById('diagnostics'),
@@ -154,10 +207,23 @@ const els = {
   platformsTitle: document.getElementById('platforms-title'),
   platformsSubtitle: document.getElementById('platforms-subtitle'),
   platformsBody: document.getElementById('platforms-body'),
+  // 每日签到
+  checkinBtn: document.getElementById('checkin-btn'),
+  checkinDialog: document.getElementById('checkin-dialog'),
+  checkinClose: document.getElementById('checkin-close'),
+  checkinAuto: document.getElementById('checkin-auto'),
+  checkinAt: document.getElementById('checkin-at'),
+  checkinAll: document.getElementById('checkin-all'),
+  checkinMessage: document.getElementById('checkin-message'),
+  checkinList: document.getElementById('checkin-list'),
+  checkinSubtitle: document.getElementById('checkin-subtitle'),
   // 新版看板外壳（public/index.html）：导航、徽标、状态条、命令面板、移动端停靠栏
   pageTitle: document.getElementById('page-title'),
   statusChip: document.getElementById('status-chip'),
   statusText: document.getElementById('status-text'),
+  themeBtn: document.getElementById('theme-btn'),
+  themeIcon: document.getElementById('theme-icon'),
+  themeLabel: document.getElementById('theme-label'),
   nav: document.getElementById('nav'),
   navPill: document.querySelector('#nav .nav__pill'),
   navGroupPlatforms: document.getElementById('nav-group-platforms'),
@@ -219,11 +285,19 @@ function pluralize(days) {
   return `${Math.round(abs)} 天`;
 }
 
+/**
+ * 倒计时文案。
+ *
+ * 48 小时以内一律按**小时**报，不按天取整：否则「明天 23:59」会被说成
+ * 「2 天后到期」，与左边的「明天」分组直接打架（这是分组上线后暴露的口径冲突）。
+ * 超过 48 小时才回到天，此时「N 天后」与分组不会矛盾。
+ */
 function expiryText(inDays) {
   if (inDays === null || inDays === undefined || Number.isNaN(inDays)) return '无过期时间';
   if (inDays < 0) return `已过期 ${pluralize(inDays)}`;
   if (inDays < 1 / 24) return '不足 1 小时';
-  return `${pluralize(inDays)}后到期`;
+  if (inDays < 2) return `${Math.max(1, Math.round(inDays * 24))} 小时后到期`;
+  return `${Math.round(inDays)} 天后到期`;
 }
 
 function levelFor(inDays, thresholds) {
@@ -285,52 +359,221 @@ function applyStagger(container, key) {
   items.forEach((item, index) => item.style.setProperty('--i', String(index)));
 }
 
+/**
+ * 读上一份成功载荷。损坏 / 过期 / 结构不对一律当没有：
+ * 首屏加速不能以显示错误数据为代价。
+ */
+function readCachedPayload() {
+  try {
+    const raw = localStorage.getItem(PAYLOAD_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      !Array.isArray(parsed.providers) ||
+      !parsed.totals ||
+      typeof parsed.totals !== 'object' ||
+      !parsed.expiryThresholds ||
+      typeof parsed.expiryThresholds !== 'object'
+    ) {
+      return null;
+    }
+    const stamp = Date.parse(parsed.cachedAt ?? parsed.generatedAt ?? '');
+    if (!Number.isFinite(stamp) || Date.now() - stamp > PAYLOAD_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(PAYLOAD_STORAGE_KEY);
+      return null;
+    }
+    // 旧版本可能把「取数中」占位一起存过：读出来前剔除，避免下次首屏误显示
+    parsed.providers = parsed.providers.filter((item) => item && item.pending !== true);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPayload(data) {
+  if (!data || data.refreshing) return;
+  try {
+    const copy = { ...data, cachedAt: new Date().toISOString() };
+    delete copy.refreshing;
+    delete copy.progress;
+    localStorage.setItem(PAYLOAD_STORAGE_KEY, JSON.stringify(copy));
+  } catch {
+    /* localStorage 不可用 / 配额满：缓存只是加速，失败不影响主流程 */
+  }
+}
+
+function setRefreshBusy(busy) {
+  const refreshing = state.data?.refreshing === true;
+  els.refreshBtn.disabled = busy || refreshing;
+  if (busy) {
+    els.refreshBtn.textContent = '刷新中…';
+    return;
+  }
+  if (refreshing) {
+    const progress = state.data?.progress;
+    els.refreshBtn.textContent = progress
+      ? `刷新中 ${progress.done}/${progress.total}`
+      : '刷新中…';
+    return;
+  }
+  els.refreshBtn.textContent = '立即刷新';
+}
+
+function stopPoll() {
+  if (!state.pollTimer) return;
+  clearTimeout(state.pollTimer);
+  state.pollTimer = 0;
+}
+
+/** 后台刷新未结束时排下一次轮询；已在排队则不重复排 */
+function schedulePoll() {
+  if (state.pollTimer) return;
+  state.pollTimer = setTimeout(() => {
+    state.pollTimer = 0;
+    load(false);
+  }, REFRESH_POLL_MS);
+}
+
+/**
+ * 拉取看板数据（非阻塞）：
+ *   - 请求 `/api/summary?wait=0`，服务端立即返回当前已知快照并后台继续取数；
+ *   - `refreshing=true` 时每 900ms 轮询一次，逐平台补齐；
+ *   - 首屏会先用 localStorage 缓存渲染（见启动段），这里只负责把真实数据换上去。
+ */
 async function load(force = false) {
-  if (state.loading) return;
+  if (state.loading) {
+    // 请求在飞时又点了「立即刷新」：等这次落地后补一轮强制刷新，不并发打上游
+    if (force) state.forceQueued = true;
+    return;
+  }
   state.loading = true;
-  els.refreshBtn.disabled = true;
-  els.refreshBtn.textContent = '刷新中…';
+  setRefreshBusy(true);
   // 手动刷新 = 「重新读一遍配置」，此时把上一轮读出来的明文密钥与配置清单都丢掉
   if (force) {
     state.revealed.clear();
     state.configuredAccounts.clear();
     state.platformOverview = null;
+    stopPoll();
   }
   try {
-    // 适配器元信息（「＋ 添加账号」的字段声明）先就位，否则首屏渲染不出表单字段
-    await loadAdapterMeta();
-    const response = await fetch(`/api/summary${force ? '?force=1' : ''}`, {
-      headers: { Accept: 'application/json' },
-    });
+    // 元信息与聚合结果并发：不要再把 /api/providers 的往返叠加到首屏等待上
+    const [, response] = await Promise.all([
+      loadAdapterMeta(),
+      fetch(`/api/summary?wait=0${force ? '&force=1' : ''}`, {
+        headers: { Accept: 'application/json' },
+      }),
+      // 签到状态是独立接口：失败不阻塞余额首屏
+      loadCheckin().catch(() => null),
+    ]);
     if (!response.ok) throw new Error(`接口返回 ${response.status}`);
-    state.data = await response.json();
+    const data = await response.json();
+    state.data = data;
+    state.dataCached = false;
     render();
+    writeCachedPayload(data);
+    if (data.refreshing) schedulePoll();
+    else stopPoll();
   } catch (error) {
+    // 有缓存时保留上一屏，只在诊断区提示；一次网络抖动不该把画面清空
     els.diagnostics.replaceChildren(
       element('div', 'diag diag--warn', `加载失败：${error.message}`),
     );
+    if (state.data?.refreshing) schedulePoll();
   } finally {
     state.loading = false;
-    els.refreshBtn.disabled = false;
-    els.refreshBtn.textContent = '立即刷新';
+    setRefreshBusy(false);
+    if (state.forceQueued) {
+      state.forceQueued = false;
+      load(true);
+    } else if (state.data?.refreshing && !state.pollTimer) {
+      schedulePoll();
+    }
   }
 }
 
 function render() {
   const data = state.data;
   if (!data) return;
+  // 顺序即优先级：先「最先到期」，再汇总，再卡片
+  renderTimeline(data);
   renderSummary(data);
-  renderAlert(data);
   renderSortOptions(data);
   renderGrid(data);
-  renderTimeline(data);
   renderDiagnostics(data);
   // 外壳（导航徽标 / 平台子菜单 / 状态条）跟着同一份数据走，放在业务渲染之后
   renderShell(data);
+  renderCheckin();
 
   els.meta.textContent = `共 ${data.providers.length} 个平台 · 服务端缓存 ${data.cacheTtlSeconds}s`;
-  els.subtitle.textContent = `多平台余额 / 积分看板 · ${data.totals.ok} 个平台数据正常`;
-  els.footerUpdated.textContent = `数据生成于 ${fmtDate(data.generatedAt)}`;
+  const pending = data.totals?.pending ?? 0;
+  els.subtitle.textContent =
+    `多平台余额 / 积分看板 · ${data.totals.ok} 个平台数据正常` +
+    (pending > 0 ? ` · ${pending} 个取数中` : '');
+
+  const stamp = data.dataUpdatedAt ?? data.cachedAt ?? data.generatedAt;
+  if (data.refreshing) {
+    const progress = data.progress ?? { done: 0, total: 0 };
+    els.footerUpdated.textContent = data.dataUpdatedAt
+      ? `数据更新于 ${fmtDate(data.dataUpdatedAt)} · 正在刷新 ${progress.done}/${progress.total}`
+      : `正在首次取数 ${progress.done}/${progress.total}`;
+  } else if (state.dataCached) {
+    els.footerUpdated.textContent =
+      `显示上次缓存（${fmtDate(data.cachedAt ?? stamp)}）` +
+      (state.loading ? ' · 正在刷新…' : '');
+  } else {
+    els.footerUpdated.textContent = `数据更新于 ${fmtDate(stamp)}`;
+  }
+}
+
+/**
+ * 数值弹簧（与 Bencho 的弹簧积分器同构）：把 node.textContent 从「上一次显示的值」
+ * 平滑推到目标值，而不是刷新时瞬间跳变。
+ *
+ * 口径：
+ *   - 键不存在（首屏）→ 直接落值，不做「从 0 滚上来」；
+ *   - 目标与上次相同 → 直接落值，省掉一次 rAF 循环；
+ *   - prefers-reduced-motion → 直接落值。
+ * 刚度 0.18 / 阻尼 0.72：约 600ms 收敛，看得见节奏但不拖沓。
+ * 只改 textContent，不碰任何布局或内联样式。
+ */
+const springValues = new Map();
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+const SPRING_STIFFNESS = 0.18;
+const SPRING_DAMPING = 0.72;
+
+function springTo(node, key, target, format) {
+  if (!node) return;
+  const previous = springValues.get(key);
+  springValues.set(key, target);
+  if (
+    previous === undefined ||
+    !Number.isFinite(previous) ||
+    previous === target ||
+    reducedMotionQuery.matches
+  ) {
+    node.textContent = format(target);
+    return;
+  }
+  let value = previous;
+  let velocity = 0;
+  let last = performance.now();
+  const step = (now) => {
+    // 卡片整块重建后旧节点已脱离文档：停掉循环，别在游离节点上空转
+    if (!node.isConnected) return;
+    // dt 按 16.67ms 归一，并夹到 2.5：标签页切回来时不会一帧跳过整段
+    const frames = Math.min(Math.max((now - last) / 16.67, 0), 2.5);
+    last = now;
+    velocity = (velocity + (target - value) * SPRING_STIFFNESS * frames) * SPRING_DAMPING ** frames;
+    value += velocity * frames;
+    if (Math.abs(target - value) < 0.01 && Math.abs(velocity) < 0.01) {
+      node.textContent = format(target);
+      return;
+    }
+    node.textContent = format(value);
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function renderSummary(data) {
@@ -339,7 +582,7 @@ function renderSummary(data) {
 
   const availableRows = Object.entries(totals.availableByCurrency ?? {})
     .filter(([, amount]) => amount > 0)
-    .map(([currency, amount]) => ({ unit: currency, amount: fmtNumber(amount) }));
+    .map(([currency, amount]) => ({ unit: currency, amount }));
 
   const critical = expiryTimeline.filter(
     (hit) => hit.inDays <= expiryThresholds.criticalDays,
@@ -350,21 +593,33 @@ function renderSummary(data) {
   ).length;
 
   const stats = [
-    { label: '平台总数', value: String(totals.providers), hint: `${totals.ok} 正常 / ${totals.failed} 异常` },
     {
-      label: '可用额度合计',
-      rows: availableRows.length > 0 ? availableRows : [{ unit: '', amount: '–' }],
-      hint: '各币种余额独立汇总，数值之间互不换算',
+      key: 'providers',
+      label: '平台总数',
+      value: totals.providers,
+      hint:
+        `${totals.ok} 正常 / ${totals.failed} 异常` +
+        ((totals.pending ?? 0) > 0 ? ` / ${totals.pending} 取数中` : ''),
     },
     {
+      key: 'available',
+      label: '可用额度合计',
+      rows: availableRows,
+      hint:
+        '各币种余额独立汇总，数值之间互不换算' +
+        ((totals.pending ?? 0) > 0 ? ` · ${totals.pending} 个平台取数中` : ''),
+    },
+    {
+      key: 'critical',
       label: `≤${expiryThresholds.criticalDays} 天到期`,
-      value: String(critical),
+      value: critical,
       hint: `${expiryThresholds.criticalDays}~${expiryThresholds.warningDays} 天内还有 ${warning} 笔`,
       accent: critical > 0,
     },
     {
+      key: 'lots',
       label: '到期批次总数',
-      value: String(expiryTimeline.length),
+      value: expiryTimeline.length,
       hint: '只统计仍可用的积分批次',
     },
   ];
@@ -374,45 +629,34 @@ function renderSummary(data) {
     card.append(element('span', 'stat__label', stat.label));
     if (stat.rows) {
       const rows = element('div', 'stat__rows');
+      if (stat.rows.length === 0) {
+        const rowEl = element('div', 'stat__row');
+        rowEl.append(element('span'), element('span', 'stat__row-amount', '–'));
+        rows.append(rowEl);
+      }
       for (const row of stat.rows) {
         const rowEl = element('div', 'stat__row');
+        const amount = element('span', 'stat__row-amount');
         rowEl.append(
           row.unit ? element('span', 'stat__row-unit', row.unit) : element('span'),
-          element('span', 'stat__row-amount', row.amount),
+          amount,
         );
         rows.append(rowEl);
+        springTo(amount, `summary:${stat.key}:${row.unit}`, row.amount, fmtNumber);
       }
       card.append(rows);
     } else {
-      card.append(element('span', 'stat__value', stat.value));
+      const value = element('span', 'stat__value');
+      card.append(value);
+      springTo(value, `summary:${stat.key}`, stat.value, fmtNumber);
     }
-    card.append(element('span', 'stat__hint', stat.hint));
+    // 口径说明收进页脚条带（BoardUI 统计卡的 footer 变体）
+    const foot = element('div', 'stat__foot');
+    foot.append(element('span', 'stat__hint', stat.hint));
+    card.append(foot);
     els.summary.append(card);
   }
   applyStagger(els.summary, 'summary');
-}
-
-function renderAlert(data) {
-  const next = data.nextExpiry;
-  if (!next) {
-    els.alert.hidden = true;
-    return;
-  }
-  const level = levelFor(next.inDays, data.expiryThresholds);
-  els.alert.hidden = false;
-  els.alert.className = `alert${level === 'critical' ? ' alert--danger' : level === 'warning' ? ' alert--warning' : ''}`;
-  els.alert.replaceChildren();
-
-  const body = element('div', 'alert__body');
-  body.append(
-    element('strong', null, `最快到期：${next.displayName} · ${next.lotLabel}`),
-    element(
-      'p',
-      null,
-      `${fmtNumber(next.amount)} ${next.currency} 将于 ${fmtDate(next.expiresAt)} 到期（${expiryText(next.inDays)}），建议优先使用。`,
-    ),
-  );
-  els.alert.append(element('span', 'alert__icon', level === 'critical' ? '🔥' : '⏳'), body);
 }
 
 function renderSortOptions(data) {
@@ -507,12 +751,18 @@ function sortedProviders(data) {
   }
 
   if (state.sort === 'risk') {
-    providers = providers.filter((provider) => urgencyOf(provider, thresholds) !== 'safe');
+    // 取数中的平台尚未知紧急程度，先留在列表里，等数据回来再按真实结果过滤
+    providers = providers.filter(
+      (provider) => provider.pending === true || urgencyOf(provider, thresholds) !== 'safe',
+    );
   }
 
   const rank = { critical: 0, warning: 1, safe: 2 };
   const sorted = [...providers];
   sorted.sort((a, b) => {
+    // 取数中的占位卡片始终排在最后：它们只是临时骨架，不该占据「最快到期」首屏位置
+    const pendingDiff = Number(a.pending === true) - Number(b.pending === true);
+    if (pendingDiff !== 0) return pendingDiff;
     switch (state.sort) {
       case 'amount-asc':
         return balanceFor(a) - balanceFor(b);
@@ -574,10 +824,277 @@ function renderGrid(data) {
   applyStagger(els.grid, 'grid');
 }
 
+/* ------------------------------------------------------------------ *
+ * 每日签到
+ * ------------------------------------------------------------------ */
+
+function checkinKeyOf(provider, accountId) {
+  return `${provider}|${accountId ?? ''}`;
+}
+
+function beijingDayKey(now = Date.now()) {
+  return new Date(now + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+function checkinStateFor(provider, accountId) {
+  const list = state.checkin?.accounts ?? [];
+  const exact = list.find(
+    (item) => item.provider === provider && (item.accountId ?? '') === (accountId ?? ''),
+  );
+  if (exact) return exact;
+  // 昵称刚被上游解析、accounts.json 尚未热加载时，卡片名与本轮签名可能短暂不一致；
+  // 平台只有一个账号时退回到它，避免签到按钮整段时间不出现。
+  const sameProvider = list.filter((item) => item.provider === provider);
+  return sameProvider.length === 1 ? sameProvider[0] : null;
+}
+
+function checkinOutcomeText(record) {
+  if (!record) return '今天未签到';
+  switch (record.outcome) {
+    case 'claimed':
+      return record.credit ? `已领取 +${record.credit}` : '已领取';
+    case 'done':
+      return '今日已签到';
+    case 'inactive':
+      return '当前无活动';
+    case 'ineligible':
+      return '不可领取';
+    case 'unsupported':
+      return '不支持';
+    case 'failed':
+      return '签到失败';
+    default:
+      return record.outcome ?? '—';
+  }
+}
+
+function checkinOutcomeClass(record) {
+  if (!record) return '';
+  if (record.outcome === 'claimed' || record.outcome === 'done') return 'is-ok';
+  if (record.outcome === 'failed') return 'is-bad';
+  return 'is-muted';
+}
+
+function showCheckinMessage(text, kind = '') {
+  state.checkinMessage = text;
+  if (!els.checkinMessage) return;
+  els.checkinMessage.textContent = text;
+  els.checkinMessage.hidden = !text;
+  els.checkinMessage.dataset.kind = kind;
+}
+
+async function loadCheckin() {
+  const response = await fetch('/api/checkin', { headers: { Accept: 'application/json' } });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(payload?.error || `接口返回 ${response.status}`);
+  state.checkin = payload;
+  renderCheckin();
+  // 卡片上的签到按钮/徽标依赖这份状态；数据已就绪时同步重绘
+  if (state.data) renderGrid(state.data);
+  return payload;
+}
+
+function renderCheckin() {
+  const status = state.checkin;
+  // 兼容没有签到弹窗的旧静态页（如 Flutter 构建产物）：整段安静跳过
+  if (!els.checkinList || !els.checkinAuto || !els.checkinAt) return;
+
+  if (status?.settings) {
+    els.checkinAuto.checked = status.settings.auto === true;
+    // 用户正在改时间时不要抢输入框
+    if (document.activeElement !== els.checkinAt) els.checkinAt.value = status.settings.at ?? '09:00';
+  }
+
+  const running = new Set(status?.running ?? []);
+  /*
+   * 只展示「支持每日签到」的账号：没有签到能力的平台（A1etherOpenAi、千问办公、
+   * 只读示例平台等）不进列表，避免把 20 多个无关账号堆在签到弹窗里。
+   * 支持但已停用的账号仍保留，并标注「账号已停用」，方便用户知道为什么没签。
+   */
+  const accounts = (status?.accounts ?? []).filter((item) => item.supported);
+  if (accounts.length === 0) {
+    els.checkinList.replaceChildren(
+      element('p', 'checkin-empty muted', status ? '还没有支持每日签到的账号' : '读取签到状态…'),
+    );
+    return;
+  }
+
+  const today = beijingDayKey();
+  const rows = accounts
+    .slice()
+    .sort(
+      (a, b) =>
+        a.displayName.localeCompare(b.displayName, 'zh-CN') ||
+        a.accountId.localeCompare(b.accountId, 'zh-CN'),
+    )
+    .map((account) => {
+      const row = element('div', 'checkin-row');
+      const identity = element('div', 'checkin-row__identity');
+      identity.append(
+        element('strong', '', account.displayName),
+        element('span', 'muted', account.accountId || '默认账号'),
+      );
+      const record = account.record;
+      const isToday = record?.day === today;
+      const result = element('div', `checkin-row__result ${checkinOutcomeClass(record)}`);
+      result.append(element('span', '', isToday ? checkinOutcomeText(record) : '今天未签到'));
+      if (record?.message) result.title = record.message;
+      if (isToday && record?.at) {
+        result.append(element('span', 'checkin-row__time muted', fmtDate(record.at)));
+      }
+      row.append(identity, result);
+
+      const key = checkinKeyOf(account.provider, account.accountId);
+      if (!account.enabled) {
+        row.append(element('span', 'muted checkin-row__hint', '账号已停用'));
+      } else if (!account.supported) {
+        row.append(element('span', 'muted checkin-row__hint', account.reason || '不支持签到'));
+      } else {
+        const busy = state.checkinBusy.has(key) || running.has(key);
+        const settled = isToday && (record?.outcome === 'claimed' || record?.outcome === 'done');
+        const button = element(
+          'button',
+          'btn checkin-row__btn',
+          busy ? '签到中…' : settled ? '已签到' : '签到',
+        );
+        button.type = 'button';
+        button.disabled = busy || settled;
+        button.addEventListener('click', () =>
+          runCheckin(account.provider, account.accountId, button),
+        );
+        row.append(button);
+      }
+      return row;
+    });
+
+  els.checkinList.replaceChildren(...rows);
+  const disabled = accounts.filter((item) => !item.enabled).length;
+  if (els.checkinSubtitle) {
+    els.checkinSubtitle.textContent =
+      `共 ${accounts.length} 个账号支持签到` +
+      (disabled > 0 ? `（${disabled} 个已停用）` : '') +
+      '；按北京时间每天执行一次';
+  }
+}
+
+async function runCheckin(provider, accountId, button) {
+  const key = checkinKeyOf(provider, accountId);
+  if (state.checkinBusy.has(key)) return;
+  state.checkinBusy.add(key);
+  if (button) {
+    button.disabled = true;
+    button.textContent = '签到中…';
+  }
+  showCheckinMessage('');
+  try {
+    const response = await fetch('/api/checkin', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Power-Meter-Intent': 'checkin',
+      },
+      body: JSON.stringify({ provider, accountId }),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.error || `接口返回 ${response.status}`);
+    const result = payload?.result;
+    if (result) {
+      showCheckinMessage(
+        `${provider} ${accountId || ''}：${checkinOutcomeText(result)}${result.message ? ` · ${result.message}` : ''}`,
+        result.outcome === 'failed' ? 'bad' : 'ok',
+      );
+    }
+    await loadCheckin();
+    // 领取成功才会改变余额；失败/已签到不必再打一轮全量探测
+    if (result?.outcome === 'claimed') load(true);
+  } catch (error) {
+    showCheckinMessage(`签到失败：${error.message}`, 'bad');
+  } finally {
+    state.checkinBusy.delete(key);
+    if (state.data) renderGrid(state.data);
+    renderCheckin();
+  }
+}
+
+async function runAllCheckins() {
+  if (!els.checkinAll) return;
+  els.checkinAll.disabled = true;
+  const label = els.checkinAll.textContent;
+  els.checkinAll.textContent = '签到中…';
+  showCheckinMessage('正在为所有支持签到的账号执行…');
+  try {
+    const response = await fetch('/api/checkin/all', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Power-Meter-Intent': 'checkin-all',
+      },
+      body: '{}',
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.error || `接口返回 ${response.status}`);
+    const results = payload?.results ?? [];
+    const claimed = results.filter((item) => item.outcome === 'claimed').length;
+    const done = results.filter((item) => item.outcome === 'done').length;
+    const failed = results.filter((item) => item.outcome === 'failed').length;
+    showCheckinMessage(
+      `签到完成：成功 ${claimed} · 已签到 ${done} · 失败 ${failed}` +
+        (results.length === 0 ? '（没有可签到的账号）' : ''),
+      failed > 0 ? 'bad' : 'ok',
+    );
+    await loadCheckin();
+    if (claimed > 0) load(true);
+  } catch (error) {
+    showCheckinMessage(`一键签到失败：${error.message}`, 'bad');
+  } finally {
+    els.checkinAll.disabled = false;
+    els.checkinAll.textContent = label;
+  }
+}
+
+async function updateCheckinSettings(patch) {
+  try {
+    const response = await fetch('/api/checkin/settings', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        'X-Power-Meter-Intent': 'checkin-settings',
+      },
+      body: JSON.stringify(patch),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.error || `接口返回 ${response.status}`);
+    if (payload?.settings) {
+      if (state.checkin) state.checkin.settings = payload.settings;
+      else state.checkin = { settings: payload.settings, accounts: [], running: [] };
+    }
+    showCheckinMessage('设置已保存', 'ok');
+    renderCheckin();
+  } catch (error) {
+    showCheckinMessage(`设置保存失败：${error.message}`, 'bad');
+    // 回滚 UI 到服务端真实状态
+    await loadCheckin().catch(() => null);
+  }
+}
+
+function openCheckinDialog() {
+  if (!els.checkinDialog) return;
+  if (!els.checkinDialog.open) els.checkinDialog.showModal();
+  void loadCheckin().catch((error) => showCheckinMessage(error.message, 'bad'));
+}
+
 function buildCard(provider, thresholds) {
   const node = els.cardTemplate.content.firstElementChild.cloneNode(true);
-  const healthy = provider.status === 'ok' || provider.status === 'demo';
-  node.dataset.state = healthy ? 'ok' : 'failed';
+  /*
+   * pending = 服务端首屏立即返回时的占位快照（见 src/service.ts 的 pendingSnapshot）。
+   * 它不是失败：卡片按「取数中」渲染骨架，不显示 0 余额，也不计入异常统计。
+   */
+  const pending = provider.pending === true;
+  const healthy = !pending && (provider.status === 'ok' || provider.status === 'demo');
+  node.dataset.state = pending ? 'loading' : healthy ? 'ok' : 'failed';
   node.dataset.urgency = urgencyOf(provider, thresholds);
 
   node.querySelector('.card__name').textContent = provider.displayName;
@@ -586,11 +1103,17 @@ function buildCard(provider, thresholds) {
   // 一个平台一个站点：徽标就是该平台归属的区域，不再有「同平台跨站点」需要区分
   const regionText = provider.region === 'cn' ? '国内' : '国际';
   tags.append(element('span', `chip chip--${provider.region}`, regionText));
-  if (provider.status === 'demo') tags.append(element('span', 'chip chip--demo', '示例数据'));
+  if (pending) {
+    tags.append(element('span', 'chip chip--loading', '取数中'));
+  } else if (provider.status === 'demo') {
+    tags.append(element('span', 'chip chip--demo', '示例数据'));
+  }
   if (provider.stale) tags.append(element('span', 'chip chip--warning', '数据可能过期'));
   // 有到期概念的走三色分级；明确不过期的（如 A1etherOpenAi 的 quota）直接给绿色标签。
   // 两者互斥：一旦声明了永不过期，就不该再出现任何到期倒计时
-  if (provider.neverExpires) {
+  if (pending) {
+    // 取数完成前不猜到期状态
+  } else if (provider.neverExpires) {
     tags.append(element('span', 'chip chip--ok', '永不过期'));
   } else if (provider.nextExpiryInDays !== null) {
     const level = levelFor(provider.nextExpiryInDays, thresholds);
@@ -603,9 +1126,62 @@ function buildCard(provider, thresholds) {
       ),
     );
   }
-  if (!healthy) tags.append(element('span', 'chip chip--danger', provider.status));
+  if (!healthy && !pending) tags.append(element('span', 'chip chip--danger', provider.status));
 
-  node.querySelector('.card__amount').textContent = healthy ? fmtNumber(balanceFor(provider)) : '—';
+  /*
+   * 每日签到：只对「支持 + 账号启用 + 卡片健康」的账号展示。
+   * 结果今天有效时才把结论做成徽标；隔天的记录只在弹窗里展示，避免卡片长期挂着旧状态。
+   */
+  const checkin = healthy && !pending
+    ? checkinStateFor(provider.provider, provider.accountId)
+    : null;
+  const checkinRecord = checkin?.record ?? null;
+  const checkinToday = checkinRecord?.day === beijingDayKey();
+  if (checkin && checkinToday) {
+    const outcome = checkinRecord.outcome;
+    if (outcome === 'claimed') {
+      tags.append(
+        element(
+          'span',
+          'chip chip--ok',
+          checkinRecord.credit ? `签到 +${checkinRecord.credit}` : '已签到',
+        ),
+      );
+    } else if (outcome === 'done') {
+      tags.append(element('span', 'chip chip--ok', '已签到'));
+    } else if (outcome === 'failed') {
+      tags.append(element('span', 'chip chip--danger', '签到失败'));
+    }
+  }
+  const checkinBtn = node.querySelector('.card__checkin');
+  if (checkinBtn) {
+    if (checkin?.supported && checkin.enabled) {
+      const key = checkinKeyOf(checkin.provider, checkin.accountId);
+      const busy = state.checkinBusy.has(key) || (state.checkin?.running ?? []).includes(key);
+      const settled =
+        checkinToday &&
+        (checkinRecord?.outcome === 'claimed' || checkinRecord?.outcome === 'done');
+      checkinBtn.hidden = false;
+      checkinBtn.disabled = busy || settled;
+      checkinBtn.textContent = busy
+        ? '签到中…'
+        : settled
+          ? '已签到'
+          : '签到';
+      checkinBtn.title = checkinRecord?.message || '为该账号执行今天的签到';
+      checkinBtn.addEventListener('click', () =>
+        runCheckin(checkin.provider, checkin.accountId, checkinBtn),
+      );
+    } else {
+      checkinBtn.hidden = true;
+    }
+  }
+
+  node.querySelector('.card__amount').textContent = pending
+    ? '读取中…'
+    : healthy
+      ? fmtNumber(balanceFor(provider))
+      : '—';
   node.querySelector('.card__currency').textContent = healthy ? currencyFor(provider) : '';
 
   const planText = [provider.plan, provider.source === 'local' ? '本地示例' : null]
@@ -637,7 +1213,11 @@ function buildCard(provider, thresholds) {
     (a, b) => (daysUntil(a.expiresAt) ?? Number.POSITIVE_INFINITY) - (daysUntil(b.expiresAt) ?? Number.POSITIVE_INFINITY),
   );
 
-  if (!healthy) {
+  if (pending) {
+    lotsContainer.replaceChildren(
+      element('p', 'card__note muted card__loading', provider.message || '正在取数…'),
+    );
+  } else if (!healthy) {
     lotsContainer.replaceChildren(element('p', 'card__error', provider.message || '取数失败'));
   } else if (credits.length === 0) {
     lotsContainer.replaceChildren(
@@ -708,7 +1288,9 @@ function buildCard(provider, thresholds) {
     },
   });
 
-  node.querySelector('.card__updated').textContent = `更新于 ${fmtDate(provider.updatedAt)}`;
+  node.querySelector('.card__updated').textContent = pending
+    ? '正在取数…'
+    : `更新于 ${fmtDate(provider.updatedAt)}`;
   const link = node.querySelector('.card__link');
   if (provider.dashboardUrl) {
     link.href = provider.dashboardUrl;
@@ -818,12 +1400,13 @@ function renderEntries(node, provider) {
 }
 
 function buildEntry(provider, entry) {
-  const healthy = entry.status === 'ok' || entry.status === 'demo';
+  const pending = entry.pending === true;
+  const healthy = !pending && (entry.status === 'ok' || entry.status === 'demo');
   // 额度归零是事实判断，不需要阈值：0 就是调不动了
   const empty = healthy && entry.amount <= 0;
   const row = element(
     'div',
-    `entry${healthy ? '' : ' entry--failed'}${empty ? ' entry--empty' : ''}`,
+    `entry${pending ? ' entry--pending' : healthy ? '' : ' entry--failed'}${empty ? ' entry--empty' : ''}`,
   );
 
   const head = element('div', 'entry__head');
@@ -831,8 +1414,8 @@ function buildEntry(provider, entry) {
   head.append(
     element(
       'span',
-      `entry__amount${healthy && !empty ? '' : ' entry__amount--failed'}`,
-      healthy ? `${fmtNumber(entry.amount)} ${entry.currency}` : entry.status,
+      `entry__amount${pending ? '' : healthy && !empty ? '' : ' entry__amount--failed'}`,
+      pending ? '取数中…' : healthy ? `${fmtNumber(entry.amount)} ${entry.currency}` : entry.status,
     ),
   );
   row.append(head);
@@ -2223,38 +2806,179 @@ async function copyText(value) {
   }
 }
 
+/**
+ * 最先到期清单（页面第一屏）。
+ *
+ * 从「打开看板要做什么」倒推，只需要回答两件事：
+ *   1. **哪几个供应商**最先到期 → 每行左侧是平台名，右侧按天分组给出「今天 / 明天 / 11/21」；
+ *   2. **那几笔具体什么时候**过期 → 每行给出「21:43」这样的具体时刻 + 倒计时。
+ *
+ * 两档都是「天数窗口」，不是「前 N 笔」：
+ *   - 收起（默认）= 今天 + 明天，只回答「最先到期的是哪几笔」；
+ *   - 展开 = 最近 5 天，够用来安排这一周用掉什么。
+ * 展开**不会**列出全部：一次铺 168 笔既读不完，也会把「展开」变成
+ * 一个比滚动还累的操作。5 天之外的数据留给卡片区与筛选。
+ * 用天数而不是笔数，是因为笔数是任意截断，用户看不出「为什么停在这里」。
+ */
+const EXPIRY_DEFAULT_DAYS = 2;
+const EXPIRY_MAX_DAYS = 5;
+
+/** 把 ISO 时刻拆成「今天 21:43」「明天 08:43」「11/21 17:26」三种口语化形式 */
+function expiryMoment(iso) {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return { day: '未知', clock: '', dayKey: 'unknown' };
+  const at = new Date(ts);
+  const now = new Date();
+  const startOf = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((startOf(at) - startOf(now)) / 86_400_000);
+  const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+  const dayKey = `${at.getFullYear()}-${at.getMonth() + 1}-${at.getDate()}`;
+
+  if (diffDays < 0) return { day: '已过期', clock, dayKey };
+  if (diffDays === 0) return { day: '今天', clock, dayKey };
+  if (diffDays === 1) return { day: '明天', clock, dayKey };
+  if (diffDays === 2) return { day: '后天', clock, dayKey };
+  return {
+    day: `${String(at.getMonth() + 1).padStart(2, '0')}/${String(at.getDate()).padStart(2, '0')}`,
+    clock,
+    dayKey,
+  };
+}
+
 function renderTimeline(data) {
-  const hits = data.expiryTimeline;
+  /*
+   * 前端再排一次序，不只依赖后端顺序：
+   * 后端按 expiresAt 的绝对值升序，但这里展示的是**本地时区**的时刻；
+   * 跨时区/夏令时的数据经过本地化后，组内顺序可能与上游不一致。
+   * 排序是纯函数、代价可忽略，换来「组内一定按时间从上到下」这个可读性保证。
+   */
+  const hits = [...(data.expiryTimeline ?? [])].sort(
+    (a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt),
+  );
   els.timeline.replaceChildren();
+
   if (hits.length === 0) {
-    els.timeline.append(element('li', 'muted', '暂无可用的到期信息'));
+    // 首屏立即返回时可能还没有任何到期数据：明确说「正在取数」，不要让人以为真的没有额度
+    const loading = data.refreshing === true;
+    els.timeline.append(
+      element('p', 'expiry__empty muted', loading ? '正在取数…' : '暂无可用的到期信息'),
+    );
     els.timeline.dataset.enter = 'instant';
+    if (els.expirySummary) {
+      els.expirySummary.textContent = loading
+        ? '正在从各平台取数，到期批次会逐条出现'
+        : '没有任何带过期时间的积分批次';
+    }
     return;
   }
 
-  const fragment = document.createDocumentFragment();
-  for (const hit of hits) {
-    const level = levelFor(hit.inDays, data.expiryThresholds);
-    const item = element('li');
-    item.dataset.level = level;
+  const thresholds = data.expiryThresholds;
+  const criticalCount = hits.filter((hit) => levelFor(hit.inDays, thresholds) === 'critical').length;
 
-    // 额度 + 人民币估值：估值与口径来自后端（src/credit-value.ts），前端只负责显示
-    const amount = element('span', 'timeline__amount', `${fmtNumber(hit.amount)} ${hit.currency}`);
-    if (typeof hit.cny === 'number') {
-      const cny = element('em', 'timeline__cny', `≈ ${fmtCny(hit.cny)}`);
-      if (hit.cnyNote) cny.title = hit.cnyNote;
-      amount.append(' ', cny);
-    }
+  // 两档窗口的笔数：收起看 2 天，展开看 5 天
+  const visibleDays = state.expiryExpanded ? EXPIRY_MAX_DAYS : EXPIRY_DEFAULT_DAYS;
+  const inVisible = hits.filter((hit) => hit.inDays <= visibleDays);
+  const inMax = hits.filter((hit) => hit.inDays <= EXPIRY_MAX_DAYS);
+  // 「展开后还能多看到几笔」：只统计 2 天之外、5 天之内那段
+  const hiddenCount = inMax.length - inVisible.length;
 
-    item.append(
-      element('span', 'timeline__when', fmtDate(hit.expiresAt)),
-      element('span', 'timeline__name', `${hit.displayName} · ${hit.lotLabel}`),
-      amount,
-      element('span', 'timeline__badge', expiryText(hit.inDays)),
-    );
-    fragment.append(item);
+  // 摘要：先给结论（几笔、最早几时），再给当前窗口内的笔数
+  if (els.expirySummary) {
+    const first = expiryMoment(hits[0].expiresAt);
+    els.expirySummary.textContent =
+      `${hits.length} 笔待消耗 · 最近一笔 ${first.day} ${first.clock} 过期 · ` +
+      `未来 ${visibleDays} 天内有 ${inVisible.length} 笔`;
   }
+
+  // 展开按钮挂在面板标题行右侧：展开 30 行后按钮不会被推到列表底部，
+  // 用户不必滚回去才能收起（这是旧版把按钮放在列表末尾的直接后果）。
+  if (els.expiryToggle) {
+    // 2 天内已经覆盖全部可显示范围时，展开按钮没有意义，直接隐藏
+    const canExpand = hiddenCount > 0;
+    els.expiryToggle.hidden = !(canExpand || state.expiryExpanded);
+    els.expiryToggle.textContent = state.expiryExpanded
+      ? `只看 ${EXPIRY_DEFAULT_DAYS} 天 ⌃`
+      : `展开到 ${EXPIRY_MAX_DAYS} 天（+${hiddenCount} 笔）⌄`;
+    els.expiryToggle.setAttribute('aria-expanded', String(state.expiryExpanded));
+    els.expiryToggle.title = state.expiryExpanded
+      ? `收起，只保留未来 ${EXPIRY_DEFAULT_DAYS} 天内的批次`
+      : `展开未来 ${EXPIRY_MAX_DAYS} 天内的其余 ${hiddenCount} 笔（不含更远的）`;
+  }
+
+  // 按天分组：hits 已升序，直接顺序切段，不重新排序
+  const groups = [];
+  for (const hit of hits) {
+    const moment = expiryMoment(hit.expiresAt);
+    const last = groups[groups.length - 1];
+    if (last && last.dayKey === moment.dayKey) last.hits.push({ hit, moment });
+    else groups.push({ dayKey: moment.dayKey, day: moment.day, hits: [{ hit, moment }] });
+  }
+
+  /*
+   * 展开态存 state：自动刷新整块重建时不会被收起。
+   * 只渲染窗口内的组；窗口外（> EXPIRY_MAX_DAYS）的组一律不渲染——
+   * 展开的上限是 5 天，不是「全部」。
+   */
+  const visibleGroups = groups.filter((group) =>
+    group.hits.some((item) => item.hit.inDays <= visibleDays),
+  );
+
+  let shown = 0;
+  const fragment = document.createDocumentFragment();
+
+  for (const group of visibleGroups) {
+    const groupNode = element('div', 'expiry__group');
+
+    // 组头：日期 + 这一天的笔数（日期只出现一次，行内只剩时刻）
+    const head = element('div', 'expiry__day');
+    head.append(
+      element('span', 'expiry__day-label', group.day),
+      element('span', 'expiry__day-count', `${group.hits.length} 笔`),
+    );
+    groupNode.append(head);
+
+    const rows = element('div', 'expiry__rows');
+    for (const { hit, moment } of group.hits) {
+      shown += 1;
+      const level = levelFor(hit.inDays, thresholds);
+      const row = element('button', 'expiry__row');
+      row.type = 'button';
+      row.dataset.level = level;
+      // 点一行 = 在卡片区筛到这个平台，等于「这笔是谁的、还剩多少」一眼到底
+      row.title = `只看 ${hit.displayName} 的卡片`;
+      row.addEventListener('click', () => filterByProvider(baseNameOf(hit.provider, [hit])));
+
+      // ① 具体时刻（左，等宽数字）
+      row.append(element('span', 'expiry__clock', moment.clock));
+
+      // ② 供应商（中，最重要的辨识信息）
+      const who = element('span', 'expiry__who');
+      who.append(
+        element('span', 'expiry__provider', baseNameOf(hit.provider, [hit])),
+        element('span', 'expiry__lot', hit.lotLabel),
+      );
+      row.append(who);
+
+      // ③ 金额 + 人民币估值（右）
+      const amount = element('span', 'expiry__amount', `${fmtNumber(hit.amount)} ${hit.currency}`);
+      if (typeof hit.cny === 'number') {
+        const cny = element('em', 'expiry__cny', `≈ ${fmtCny(hit.cny)}`);
+        if (hit.cnyNote) cny.title = hit.cnyNote;
+        amount.append(' ', cny);
+      }
+      row.append(amount);
+
+      // ④ 倒计时（最右，语义色只在这里出现）
+      row.append(element('span', 'expiry__left', expiryText(hit.inDays)));
+
+      rows.append(row);
+    }
+    groupNode.append(rows);
+    fragment.append(groupNode);
+  }
+
   els.timeline.append(fragment);
+
   applyStagger(els.timeline, 'timeline');
 }
 
@@ -2272,6 +2996,8 @@ function renderDiagnostics(data) {
     items.push({ warn: true, text: warning });
   }
   for (const provider of data.providers) {
+    // 取数中的占位卡片不是诊断项：数据回来之前不该在「诊断」里报错
+    if (provider.pending === true) continue;
     if (provider.status === 'ok' || provider.status === 'demo') continue;
     items.push({
       warn: provider.status !== 'notConfigured',
@@ -2298,13 +3024,20 @@ function renderDiagnostics(data) {
 // 避免外壳和区块各算一套、对不上。
 // ===========================================================================
 
-/** 导航目标 → 顶栏标题。alert / toolbar 故意不在表里：它们没有导航项，向上沿用 */
+/** 导航目标 → 顶栏标题。toolbar 故意不在表里：它没有导航项，向上沿用上一个区块 */
 const NAV_SECTION_TITLES = {
+  'timeline-panel': '最先到期',
   summary: '总览',
   providers: '额度卡片',
-  'timeline-panel': '到期时间线',
   'diagnostics-panel': '诊断',
 };
+
+/**
+ * 页面第一个有导航项的区块：首屏 = 「最先到期」。
+ * scrollspy 的兜底一律用它，而不是写死某个区块名——否则改首屏顺序时
+ * 导航高亮会停在页面里根本不存在的那个位置上。
+ */
+const FIRST_NAV_TARGET = Object.keys(NAV_SECTION_TITLES)[0];
 
 /** 「有导航项」的 data-section 值（与左侧导航的 data-target 一一对应） */
 const NAV_TARGETS = new Set(Object.keys(NAV_SECTION_TITLES));
@@ -2334,14 +3067,22 @@ function renderShell(data) {
   const thresholds = data.expiryThresholds ?? { criticalDays: 3, warningDays: 7 };
 
   setBadge(els.navBadgePlatforms, totals.providers ?? providers.length);
-  setBadge(els.navBadgeTimeline, timeline.length);
 
-  // 到期时间线：有 critical 批次就把徽标点热（CSS 的 .nav__badge--hot）
+  /*
+   * 「最先到期」徽标 = **紧急窗口内的笔数**（≤ criticalDays），不是库存总量。
+   * 旧口径写 timeline.length（这里会显示 167），等于把「一共存了多少笔积分」
+   * 塞进导航：每天都是三位数、永远点不热，反而看不出「现在有几笔要马上用掉」。
+   * 用 criticalDays 而不是 warningDays，是因为后者（默认 14 天）同样会把
+   * 数字推到几十上百，失去「一眼看出紧不紧张」的意义。
+   */
+  const urgentCount = timeline.filter(
+    (hit) => hit.inDays >= 0 && hit.inDays <= thresholds.criticalDays,
+  ).length;
+  setBadge(els.navBadgeTimeline, urgentCount);
   if (els.navBadgeTimeline) {
-    els.navBadgeTimeline.classList.toggle(
-      'nav__badge--hot',
-      timeline.some((hit) => hit.inDays <= thresholds.criticalDays),
-    );
+    els.navBadgeTimeline.classList.toggle('is-zero', urgentCount === 0);
+    els.navBadgeTimeline.classList.toggle('nav__badge--hot', urgentCount > 0);
+    els.navBadgeTimeline.title = `${urgentCount} 笔在 ${thresholds.criticalDays} 天内过期（共 ${timeline.length} 笔待消耗）`;
   }
 
   // 诊断徽标口径：与 renderDiagnostics 同源，但排除 notConfigured——
@@ -2353,12 +3094,24 @@ function renderShell(data) {
     els.navBadgeDiag.classList.toggle('nav__badge--hot', diagCount > 0);
   }
 
-  // 状态条：N 正常 / M 异常；有异常时整条转 warning 色
+  // 状态条：刷新中显示进度；空闲时 N 正常 / M 异常（占位卡片单列「取数中」）
   if (els.statusText) {
-    els.statusText.textContent = `${totals.ok ?? 0} 正常 / ${totals.failed ?? 0} 异常`;
+    if (data.refreshing) {
+      const progress = data.progress ?? { done: 0, total: totals.providers ?? 0 };
+      els.statusText.textContent =
+        state.dataCached
+          ? `显示缓存 · 刷新中 ${progress.done}/${progress.total}`
+          : `正在刷新 ${progress.done}/${progress.total}`;
+    } else {
+      const pending = totals.pending ?? 0;
+      els.statusText.textContent =
+        `${totals.ok ?? 0} 正常 / ${totals.failed ?? 0} 异常` +
+        (pending > 0 ? ` / ${pending} 取数中` : '');
+    }
   }
   if (els.statusChip) {
-    els.statusChip.classList.toggle('status--warn', (totals.failed ?? 0) > 0);
+    els.statusChip.classList.toggle('status--warn', !data.refreshing && (totals.failed ?? 0) > 0);
+    els.statusChip.classList.toggle('status--busy', data.refreshing === true);
   }
 
   renderNavPlatforms(data);
@@ -2383,6 +3136,7 @@ function countDiagnostics(data) {
   const warnings = (data.warnings ?? []).length;
   const unhealthy = (data.providers ?? []).filter(
     (provider) =>
+      provider.pending !== true &&
       provider.status !== 'ok' &&
       provider.status !== 'demo' &&
       provider.status !== 'notConfigured',
@@ -2530,19 +3284,20 @@ function applyActiveTarget(target) {
 
 /**
  * scrollspy 的核心判断：取所有 [data-section]，选「顶部已越过探针、且离探针最近」的那个；
- * alert / toolbar 没有导航项，向前沿用最近一个有导航项的区块。
+ * toolbar 没有导航项，向前沿用最近一个有导航项的区块。
  */
 function currentSectionTarget() {
   const sections = [...document.querySelectorAll('[data-section]')];
   if (sections.length === 0) return null;
 
-  // 页面还在顶部（或整页没有滚动余地）：总览就是激活项
-  if (window.scrollY <= 2) return 'summary';
+  // 页面还在顶部（或整页没有滚动余地）：首屏区块「最先到期」就是激活项。
+  // 不能写死 summary——首屏已经换成了到期清单，写死会让导航一进来就点错项。
+  if (window.scrollY <= 2) return FIRST_NAV_TARGET;
 
-  // 隐藏区块（#alert 有内容才显示）没有盒子，rect 恒为 0，会把探针判断带偏；
+  // 没有盒子的区块（如尚未渲染的空容器）rect 恒为 0，会把探针判断带偏；
   // getClientRects() 为空正是「当前没有渲染」的可靠信号
   const rendered = sections.filter((section) => section.getClientRects().length > 0);
-  if (rendered.length === 0) return 'summary';
+  if (rendered.length === 0) return FIRST_NAV_TARGET;
 
   const probe = window.innerHeight * NAV_PROBE_RATIO;
   let passed = null;
@@ -2560,14 +3315,14 @@ function currentSectionTarget() {
   const hit = passed ?? (atBottom ? rendered[rendered.length - 1] : rendered[0]);
   if (!hit) return null;
 
-  // 从命中点向前找第一个有导航项的区块，把 alert / toolbar 这类「无导航项」的沿用掉。
-  // 这里用全量 sections 的顺序定位，保证 alert 消失与否都不影响沿用结果
+  // 从命中点向前找第一个有导航项的区块，把 toolbar 这类「无导航项」的沿用掉。
+  // 这里用全量 sections 的顺序定位，保证中间区块增减都不影响沿用结果
   const index = sections.indexOf(hit);
   for (let i = index; i >= 0; i -= 1) {
     const target = sections[i].dataset.section;
     if (NAV_TARGETS.has(target)) return target;
   }
-  return 'summary';
+  return FIRST_NAV_TARGET;
 }
 
 /** 滚动位置变化后重算激活项；rAF 节流，绝不用 setInterval */
@@ -2678,13 +3433,16 @@ function scheduleNavPill() {
 /** 命令一律现算：数据变了（平台增减、刷新后状态变化），命令清单跟着变 */
 function buildCommands() {
   const items = [
+    { label: '跳转到最先到期', hint: '跳转', run: () => scrollToSection('timeline-panel') },
     { label: '跳转到总览', hint: '跳转', run: () => scrollToSection('summary') },
     { label: '跳转到额度卡片', hint: '跳转', run: () => scrollToSection('providers') },
-    { label: '跳转到到期时间线', hint: '跳转', run: () => scrollToSection('timeline-panel') },
     { label: '跳转到诊断', hint: '跳转', run: () => scrollToSection('diagnostics-panel') },
     { label: '立即刷新数据', hint: '操作', run: () => void load(true) },
     { label: '打开平台与账号', hint: '操作', run: () => openPlatformsDialog() },
     { label: '切换自动刷新', hint: '操作', run: () => toggleAutoRefresh() },
+    { label: '主题：跟随系统', hint: '主题', run: () => setTheme('auto') },
+    { label: '主题：浅色', hint: '主题', run: () => setTheme('light') },
+    { label: '主题：深色', hint: '主题', run: () => setTheme('dark') },
   ];
   // 与子菜单首行同源：清空筛选，回到全部卡片
   items.push({ label: '显示全部平台', hint: '平台', run: () => filterByProvider('') });
@@ -2705,6 +3463,86 @@ function toggleAutoRefresh() {
   state.autoRefresh = next;
   if (els.autoRefresh) els.autoRefresh.checked = next;
   scheduleAutoRefresh();
+}
+
+/* ------------------------------ 主题切换 ------------------------------ */
+
+/** 系统深色偏好：既用于「自动」解析，也用于监听系统变化 */
+const darkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+/**
+ * 读取持久化的主题选择；localStorage 不可用或值非法时退回「浅色」。
+ *
+ * 兜底不是「自动」：看板的视觉基准是 BoardUI 的浅色系统（见 styles.css 顶部），
+ * 系统深色的用户首次打开也应先看到设计基准。必须与 index.html 头部内联脚本
+ * 的默认值保持一致，否则首帧与运行时会闪一下。
+ */
+function storedThemeChoice() {
+  try {
+    const saved = localStorage.getItem(THEME_STORAGE_KEY);
+    if (THEME_CHOICES.includes(saved)) return saved;
+  } catch (error) {
+    /* 隐私模式下读取会抛：按浅色处理，不影响本次会话内的切换 */
+  }
+  return 'light';
+}
+
+/** 把「选择」解析成实际生效的主题（auto 交给系统偏好） */
+function effectiveTheme(choice) {
+  if (choice === 'auto') return darkQuery.matches ? 'dark' : 'light';
+  return choice;
+}
+
+/**
+ * 应用主题：<html data-theme> 是 CSS 的唯一开关（见 styles.css 的
+ * :root[data-theme='light']），data-theme-choice 只记录用户选择。
+ * persist 仅在用户主动切换时为 true；首屏同步与系统偏好变化不写存储。
+ */
+function applyTheme(choice, { persist = false } = {}) {
+  // 非法值退回浅色（视觉基准），而不是「自动」——与 storedThemeChoice 的兜底一致
+  state.themeChoice = THEME_CHOICES.includes(choice) ? choice : 'light';
+  const effective = effectiveTheme(state.themeChoice);
+  const root = document.documentElement;
+  root.dataset.theme = effective;
+  root.dataset.themeChoice = state.themeChoice;
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, state.themeChoice);
+    } catch (error) {
+      /* 存不下就只在本次会话生效，界面表现没有差别 */
+    }
+  }
+
+  const meta = THEME_META[state.themeChoice];
+  const showing = effective === 'dark' ? '深色' : '浅色';
+  if (els.themeLabel) els.themeLabel.textContent = meta.label;
+  if (els.themeIcon) els.themeIcon.textContent = meta.icon;
+  if (els.themeBtn) {
+    els.themeBtn.title = `${meta.title}（当前显示${showing}，点击切换）`;
+    els.themeBtn.setAttribute('aria-label', `主题：${meta.label}，当前显示${showing}，点击切换`);
+  }
+}
+
+/**
+ * 顶栏按钮循环：自动 → 浅色 → 深色 → 自动。
+ * 从「自动」出发时先切到当前没生效的一侧，保证第一次点击一定有可见变化。
+ */
+/**
+ * 顶栏按钮循环：浅色 → 深色 → 自动 → 浅色。
+ * 从「浅色」（视觉基准）出发时先切到深色，保证第一次点击一定有可见变化。
+ */
+function cycleTheme() {
+  const current = state.themeChoice;
+  let next;
+  if (current === 'light') next = 'dark';
+  else if (current === 'dark') next = 'auto';
+  else next = 'light';
+  applyTheme(next, { persist: true });
+}
+
+/** 命令面板用：直接指定选择，同样持久化 */
+function setTheme(choice) {
+  applyTheme(choice, { persist: true });
 }
 
 /** 按输入框关键词重建列表（label + hint 小写 includes；中文直接 includes） */
@@ -2840,6 +3678,12 @@ function bindShell() {
   }
 
   els.navGroupPlatforms?.addEventListener('click', toggleNavPlatforms);
+
+  // 「展开 / 收起」到期窗口：按钮在标题行，重绘只换列表内容，按钮本身不重建
+  els.expiryToggle?.addEventListener('click', () => {
+    state.expiryExpanded = !state.expiryExpanded;
+    if (state.data) renderTimeline(state.data);
+  });
   els.dockCmd?.addEventListener('click', openCommandPalette);
   els.cmdOpen?.addEventListener('click', openCommandPalette);
   els.cmdBtn?.addEventListener('click', openCommandPalette);
@@ -2907,6 +3751,14 @@ function bindShell() {
 
   // 子菜单若用 CSS 过渡展开，期间量到的是动画中间态：展开结束后再校一次
   els.navPlatforms?.addEventListener('transitionend', scheduleNavPill);
+
+  // 主题：按钮循环切换；系统偏好只在「自动」时跟随。
+  // 首屏颜色已由 index.html 头部内联脚本落好，这里只把存储值同步给按钮文案。
+  els.themeBtn?.addEventListener('click', cycleTheme);
+  darkQuery.addEventListener('change', () => {
+    if (state.themeChoice === 'auto') applyTheme('auto');
+  });
+  applyTheme(storedThemeChoice());
 }
 
 function scheduleAutoRefresh() {
@@ -2916,6 +3768,18 @@ function scheduleAutoRefresh() {
 }
 
 els.refreshBtn.addEventListener('click', () => load(true));
+els.checkinBtn?.addEventListener('click', openCheckinDialog);
+els.checkinClose?.addEventListener('click', () => els.checkinDialog.close());
+els.checkinDialog?.addEventListener('click', (event) => {
+  if (event.target === els.checkinDialog) els.checkinDialog.close();
+});
+els.checkinAuto?.addEventListener('change', (event) => {
+  void updateCheckinSettings({ auto: event.target.checked });
+});
+els.checkinAt?.addEventListener('change', (event) => {
+  void updateCheckinSettings({ at: event.target.value });
+});
+els.checkinAll?.addEventListener('click', () => void runAllCheckins());
 els.platformsBtn.addEventListener('click', () => openPlatformsDialog());
 els.platformsClose.addEventListener('click', () => els.platformsDialog.close());
 // 点遮罩关闭（dialog 内部点击不冒泡到 dialog 本身时才算遮罩）
@@ -2948,6 +3812,25 @@ document.addEventListener('visibilitychange', () => {
     scheduleLoginPoll(state.login.providerId);
   }
 });
+
+// 首屏先用上一份成功载荷同步画出来（浏览器刷新 / 重新进入都立即有画面）；
+// 随后 load(false) 用 /api/summary?wait=0 的非阻塞结果逐平台替换。
+const cachedPayload = readCachedPayload();
+if (cachedPayload) {
+  state.data = cachedPayload;
+  state.dataCached = true;
+  // 缓存数据要「立刻可见」：不重放首次入场的错开动画（最多 32ms × N 的延迟）
+  entered.add('summary');
+  entered.add('grid');
+  try {
+    render();
+  } catch (error) {
+    // 缓存结构异常（旧版本字段变更等）：丢掉缓存，等接口返回真实数据
+    state.data = null;
+    state.dataCached = false;
+    void error;
+  }
+}
 
 // 外壳交互先就位：即使 /api/summary 还没回来，导航、命令面板、停靠栏也能用
 bindShell();
