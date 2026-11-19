@@ -2,7 +2,6 @@ package routes
 
 import (
 	"sort"
-	"time"
 )
 
 // ExpiryFirst spends what is about to be lost first: an account whose
@@ -15,9 +14,10 @@ import (
 //
 // The power-meter sidecar knows the batches (internal/powermeterexpiry), so a
 // pool routed this way spends the account with the least time left on its
-// soonest batch first, and the next one after it. To the hour: batches a
-// few minutes apart are spent in Smart's order among themselves, so a
-// request doesn't change which account answers over a minute's difference.
+// soonest batch first, and the next one after it, in the order the Balance
+// board's timeline shows: the exact instants, a minute apart included, so
+// the batch about to be lost never waits behind one with a minute more.
+// Two seats whose batches expire at the same instant keep Smart's order.
 //
 // The rest is Smart's: a seat the sidecar knows nothing of goes after
 // those it does, in Smart's order (a provider it doesn't cover, a new
@@ -49,7 +49,6 @@ var ExpiryFirst = Strategy{ByExpiry: true, Order: func(_ string, seats []Seat) [
 			return !ea.IsZero() // known expiries before unknown ones
 		}
 		if !ea.IsZero() {
-			ea, eb = ea.Truncate(time.Hour), eb.Truncate(time.Hour)
 			if !ea.Equal(eb) {
 				return ea.Before(eb)
 			}

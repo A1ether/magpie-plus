@@ -42,10 +42,21 @@ func TestExpiryFirstSpendsSoonestFirst(t *testing.T) {
 			want: []int{1, 0},
 		},
 		{
-			// batches in the same hour are alike: Smart's order stands
-			name: "same hour keeps Smart's order",
+			// a minute apart is a minute: the batch that expires first goes
+			// first, though Smart would renew the other sooner. This is the
+			// order the Balance board's timeline shows.
+			name: "a minute apart goes by the minute",
 			seats: []Seat{
-				{Key: "a", Known: true, Used: 10, Soon: []time.Time{at(3 * time.Hour)}, Expires: hour.Add(time.Minute)},
+				{Key: "a", Known: true, Used: 10, Soon: []time.Time{at(3 * time.Hour)}, Expires: hour},
+				{Key: "b", Known: true, Used: 10, Soon: []time.Time{at(2 * time.Hour)}, Expires: hour.Add(time.Minute)},
+			},
+			want: []int{0, 1},
+		},
+		{
+			// the same instant is alike: Smart's order stands
+			name: "alike expiries keep Smart's order",
+			seats: []Seat{
+				{Key: "a", Known: true, Used: 10, Soon: []time.Time{at(3 * time.Hour)}, Expires: hour},
 				{Key: "b", Known: true, Used: 10, Soon: []time.Time{at(2 * time.Hour)}, Expires: hour},
 			},
 			want: []int{1, 0},
