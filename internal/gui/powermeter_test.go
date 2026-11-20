@@ -89,6 +89,12 @@ func TestPowerMeterSwitchKeepsOtherSettings(t *testing.T) {
 // disabled), so a window open across the flip sees the change.
 func TestPowerMeterStatusFollowsTheSwitch(t *testing.T) {
 	isolateSettings(t)
+	t.Cleanup(func() {
+		// the sidecar this test turns on must stop before its HOME goes, or
+		// its child writes into the folder TempDir is removing
+		_ = settings.SetPowerMeter(false)
+		powerMeterSupervisor()
+	})
 	h := Handler(nil, nil)
 	state := func() string {
 		rec := httptest.NewRecorder()

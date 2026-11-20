@@ -330,6 +330,13 @@ func (s *Supervisor) buildCommand(ctx context.Context) (*exec.Cmd, error) {
 	if s.opts.Command != nil {
 		return s.opts.Command(ctx, s.opts, s.token), nil
 	}
+	// The installed bundle is checked before Bun: a machine without one (a
+	// test's fresh HOME, a fresh install) must say what to install, not
+	// download a whole runtime to run a file that isn't there.
+	server := s.serverJS()
+	if _, err := os.Stat(server); err != nil {
+		return nil, fmt.Errorf("powermeter server.js is missing at %s: install it with 'make balance-board', or point MAGPIE_POWERMETER_SERVER_JS at a build", server)
+	}
 	if err := s.ensureConfigDir(); err != nil {
 		return nil, err
 	}
@@ -340,7 +347,7 @@ func (s *Supervisor) buildCommand(ctx context.Context) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("powermeter needs Bun: %w", err)
 	}
 	args := []string{
-		s.serverJS(),
+		server,
 		"--port", "0",
 		"--host", s.opts.Host,
 		"--no-static",
