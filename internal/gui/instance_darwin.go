@@ -46,10 +46,17 @@ func runningAlready(showMain bool, link string) bool {
 		}
 		os.WriteFile(stamp, nil, 0o600)
 		os.Chtimes(stamp, time.Now(), time.Now())
-		// by its bundle id: the magpie running may be another copy of the
-		// app, which opening this one's path wouldn't reach
+		// by this app's own bundle id: the magpie running may be another
+		// copy of the app, which opening this one's path wouldn't reach.
+		// The fork must reopen magpie plus, not the magpie it was forked
+		// from: opening that one starts it and it takes 3425 for itself,
+		// so a plus already in the menu bar looked like it had crashed.
 		if update.Bundle() != "" {
-			proc.Command("open", "-b", "com.yetone.magpie").Run()
+			id := appIdentity()
+			if id == "" {
+				id = "com.yetone.magpie"
+			}
+			proc.Command("open", "-b", id).Run()
 		}
 	}
 	return true
