@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -170,13 +171,15 @@ func TestOpenCodeGoOwnFreeModelGetsNothingOfOpenCodes(t *testing.T) {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
 	a = asked()
-	// the path the environment block names is the temp dir with its links
-	// followed, which is /private/var/... on macOS
+	// The block names OpenCode's folder in the system's temporary folder,
+	// as OpenCode does: /tmp/opencode only where that is /tmp (Linux), on
+	// macOS under /private/var/folders, on Windows under AppData (#7117).
 	tmp := os.TempDir()
 	if real, err := filepath.EvalSymlinks(tmp); err == nil {
 		tmp = real
 	}
-	if len(a) != 3 || !strings.Contains(a[2].body, "Prefer "+filepath.Join(tmp, "opencode")) || !strings.Contains(a[2].body, provider.OpenCodeStub) {
+	prefer, _ := json.Marshal("Prefer " + filepath.Join(tmp, "opencode") + " over generic system temporary directories such as /tmp")
+	if len(a) != 3 || !strings.Contains(a[2].body, strings.Trim(string(prefer), `"`)) || !strings.Contains(a[2].body, provider.OpenCodeStub) {
 		t.Fatalf("Zen's free model at Zen: %+v", a)
 	}
 }

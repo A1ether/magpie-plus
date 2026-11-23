@@ -761,6 +761,28 @@ does not call), and only Anthropic decides whether a request spends it
 (X, Shinji_Zl). Tried against fakes only; the owner's account has extra
 usage off.
 
+The text draws the session and the weeks from the endpoint's `five_hour`
+and `seven_day` fields, and from `limits[]` only the rows of kind
+`weekly_scoped` with a model. The same `usage_report.rate_limits.limits`
+carries every row as the server sent it (`kind` `session`, `weekly_all`
+or `weekly_scoped`, `percent` 0-100, `resets_at` ISO 8601). When the text
+drew no window, `claudeExtraUsage` adds each such row as /usage's own
+line (the reset as written, which `claudeResetTime` reads), and an empty
+`limits` (the server reported no meters) as
+`provider.ClaudeNoLimitsLine`, read as a text row "5-hour and weekly
+limits: None on this plan". `limits: null`, or `rate_limits: null` (the
+fetch failed, or the token lacks the profile scope), adds nothing, and
+the subscription line alone still reads as "temporarily unavailable"
+(`errClaudeUsageUnavailable`), unless what Claude Code saved of the
+account's organization (`.claude.json` `oauthAccount`) names a seat it
+holds no rate limits for: `seatTier` `enterprise_usage_based` or
+`billingType` `usage_based` (Claude Code's `vmr` and `fD`,
+`claudeUsageBased`). A Claude Enterprise seat read as "temporarily
+unavailable" before (@andy_chen1997 on X). Built from Claude Code
+2.1.328's schema and handling; no Enterprise account was tried
+(`TestClaudeUsageRows`, `TestClaudeEnterpriseUsage`,
+`TestClaudeUsageBasedSeat`).
+
 A turn's run (`claudeRunEnv`) is not given
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, which the one-off runs above
 keep (`cleanClaudeEnv`). With it, or `DISABLE_TELEMETRY` or
@@ -1328,6 +1350,22 @@ history to the 1h cache at 2×.
    the model took the paths for the images and said it could not see them
    (a Discord report, v0.1.2862). A turn told to a saved session says the
    same (`renderClaudeTurn`).
+
+When the latest assistant message was added locally by the client (Claude
+Code adds `No response requested.` with model `<synthetic>` on native
+resume), it is not a reply the upstream run returned. The Messages request
+keeps only its role and content, so selection skips only that known notice
+as a reply boundary and matches the complete history prefix held by a
+waiting run or saved session (`waitingPrefix`), with the account, model,
+settings and full tool definitions unchanged. Everything after that prefix,
+including any cancelled user message and the local assistant message, is
+sent as the increment (#3808). A quota refusal (`keepForReset`) or a
+busy/ended retry (`retryBranch`) cuts the run back to the key it took the
+turn at (`backKey`, or `fromKey` for a run started from a saved session)
+and takes the turn from the request again past the local reply
+(`turnFrom`), so the turn asked again still carries the cancelled message.
+Results owed to calls before the prefix cannot be replayed through this
+path. A resume with changed tool schemas still starts a new run.
 
 A Claude Code that ends before it answers a control request
 (`cliControl`: `initialize`, the safety context) is reported with its
@@ -2230,6 +2268,61 @@ claude-hud shows. One that signs in to magpie with magpie's key
 headers only for a claude.ai subscriber. A reply another provider answered
 carries none.
 
+## The way out's region (`internal/egress`, `claudeRegionHold`)
+
+@alterxyz4 on X asked for a "canary": a warning when this computer's way
+out to the internet is in a region Anthropic doesn't list in its Supported
+Regions Policy, before Claude subscription requests go out from there.
+
+- **The list.** `egress.Supported` is the policy's list (effective
+  2026-11-12, 185 entries) by ISO 3166-1 code, and
+  `TestSupportedIsThePolicysList` holds it to the page's text in
+  `internal/egress/testdata/supported-regions.txt`. A listed country's
+  territories count as supported (`territories`: Puerto Rico, Guam,
+  Gibraltar, Réunion, Greenland…). Hong Kong and Macao are China's, which
+  isn't listed. Ukraine is listed except for five regions a country code
+  can't tell apart, so a way out in Ukraine always reads as supported.
+- **The lookup.** `egress.Check` asks Cloudflare's
+  `https://www.cloudflare.com/cdn-cgi/trace` for its `loc=` through the
+  same proxy choice the Claude accounts' requests use (`ProxyOfLogin` over
+  the Claude logins, `provider.ClaudeProxies`; `""` is magpie's own proxy
+  setting), once per distinct choice. `XX`, `T1` (Tor), an empty or
+  malformed code, a non-200 or a failed request are **Unknown**, which is
+  neither fine nor unsupported: it draws nothing and holds nothing.
+- **When.** Never per request. `egress.Keep` (started by the gateway's
+  `ListenAndServe`) looks up at the start, again when the network or the
+  set of proxy choices changes (a fingerprint of the interfaces' addresses
+  and the choices, polled every 20s), every 15 minutes otherwise, and
+  when the GUI's Check again or a never-looked-up choice asks
+  (`egress.Again`). No Claude account, no lookup. A node switched inside
+  a proxy app changes nothing magpie can see, so it shows at the next
+  15-minute lookup, or at once with Check again.
+- **What is shown.** `/api/providers` gives the Claude row `egress`, the
+  worst result over its choices (`egress.Worst`: Unsupported over Unknown
+  over OK). Unsupported draws a line over the Providers list
+  (`egress.js`, imported only then) naming the region in the reader's
+  language, with Check again (`POST /api/egress/check`), and the tray's
+  tooltip begins with a warning (`trayEgressTip`). Neither says anything
+  of bans or of keeping an account safe: the policy is Anthropic's, and
+  magpie can only say where the way out is.
+- **The hold** (Claude editor → Advanced → Hold requests outside supported
+  regions, `claudeRegionHold`, off by default). On, `egress.Hold` refuses
+  a Claude subscription request whose choice last read Unsupported, before
+  any Claude Code starts: in the gateway's `attempt` (a 502 whose text
+  starts `magpie held this Claude request`, `egress.HeldWords`) and in
+  `proxied` (warm-ups and usage reads through Claude Code). An Unsupported
+  older than 30s is looked up again first, so a proxy turned back on lets
+  the request go. `failure` reads a held reply as `failProxy`: nobody
+  rests, and the next account or member is asked. A choice not looked up
+  yet goes, and asks for a lookup.
+  - It is off by default because Cloudflare's `loc` can differ from what
+    Anthropic sees: a rule-based proxy (Clash and the like) can send
+    cloudflare.com and anthropic.com through different nodes, or one of
+    them direct. A wrong Unsupported must not stop anyone's requests; the
+    warning says it, and the user decides.
+  - Not held: the provider's own HTTP paths (token refresh, the usage
+    endpoint), which aren't Claude Code runs.
+
 ## A restart to update
 
 A run is a Claude Code process of this magpie's, so a restart to update
@@ -2316,6 +2409,7 @@ turn alone), `TestQuotaShelfFor`.
 ## Verification
 
 ```sh
+go test -tags nogui ./internal/gateway/ -run 'TestClaudeSyntheticResume|TestClaudeResumePrefix' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeClientCache' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeLeanPrompt' -count=1
 go test -tags nogui ./internal/gateway/ -run '^TestClaudeTUIChosen$' -count=1

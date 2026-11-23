@@ -550,6 +550,14 @@ named in the square's title, and the session's effort stays. Its subagents'
 effort is on the Subagents row, not a square, and a Claude Code not through
 magpie has no levels, no square and no effort entries.
 
+`claude-effort-max.test.cjs` checks New sessions' effort in Claude Code's
+Details set to max (@daix91 on X): its title ends with the line that max is
+fixed in Claude Code's environment, so /effort can't change it, and nothing
+new shows on the page; another level picked in the slider takes the line out
+at once and in the row drawn again, and max picked puts it back. Chromium
+and WebKit, five languages, 1100 and 560 wide, no sideways scroll; the API
+is faked. Run with `node --test internal/gui/tests/claude-effort-max.test.cjs`.
+
 `claude-subagent-effort-row.test.cjs` draws Claude Code's subagent effort in
 Chromium and WebKit, English and Chinese, at 1100px and 560px: it is at the
 right of the Subagents row in Tiers, laid out as the tiers' efforts are (same
@@ -1520,6 +1528,16 @@ found skill with a byte copy in another agent shows both agents' icons and
 no "differs in"; one that really differs still says so. Chromium and
 WebKit, in English and Chinese, with `/api/plugins` faked.
 
+`library-sections.test.cjs` hides the Library's tabs from Plugins ›
+Built-in (lantian_x on X): the Library row's Sections link opens a menu of
+the tabs, each ticked; unticking Hooks and Environment variables posts the
+plugin's `hide` setting at once and the link says two are hidden; the
+Library page's tabs and, from 1024 points, the sidebar's list leave them
+out, and Hooks, open last, gives way to Instructions. The last tab shown
+can't be hidden and nothing is posted then; nothing but the setting is
+posted at all. Every language, Chromium and WebKit, at 1100, 800 and 420
+points, with the API faked.
+
 `library-problems-hide.test.cjs` opens the Library with Grok Build's
 AGENTS.md failing to stat at every sync (Zachary-wW, #3745), the API
 answering as `library.go` does, the error texts as magpie's own sync gave
@@ -1732,6 +1750,12 @@ never reached the vendor, went on to the next and that the first doesn't
 rest, tagged "proxy not reachable", in English and Chinese, never "an error
 another account wouldn't fix"; picking the request doesn't move the page.
 Chromium and WebKit, API faked.
+
+`proxy-down.test.cjs` opens Settings → Network with the proxy on Auto and
+a system proxy on loopback that nothing listens on (@bitssly on X: a VPN
+app turned off left Windows' proxy at its port). The proxy line names the
+address found and says requests go direct until it runs again, in all five
+languages, at 1100px and 420px, Chromium and WebKit. The API is faked.
 
 `s3-sync.test.cjs` sets up sync to an S3 bucket from Settings (#296). It
 works as follows, in English and Chinese:
@@ -2841,3 +2865,9 @@ tone, #26251E. It checks that the row draws that picture as a mask in the
 text colour, and that it shows in both themes, all five languages, at 980px
 and 420px, in Chromium and WebKit (chen2652). `ARTIFACT_DIR` keeps the row's
 screenshots.
+
+`plugin-badge-align.test.cjs` checks that the magpie community badge's
+shield, on a card and on Today's pick, and the card's downloads arrow are
+centred on their words: the icon's ink against the words' ink, read from a
+4x screenshot, within 1px. All five languages, 1180px and 420px, Chromium
+and WebKit. `BADGE_LOG` prints each offset.

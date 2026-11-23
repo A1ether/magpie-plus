@@ -242,9 +242,14 @@ type Settings struct {
 	RedactModelName  string             `json:"redactModelName,omitempty"`
 	RedactModelOff   bool               `json:"redactModelOff,omitempty"`
 	RedactModelAuto  bool               `json:"redactModelAuto,omitempty"`
-	RedactPersonal   bool               `json:"redactPersonal,omitempty"`
-	RedactKinds      map[string]bool    `json:"redactKinds,omitempty"`
-	RedactWords      []string           `json:"redactWords,omitempty"`
+	// RedactModelDir is the folder the local models are downloaded into
+	// (pii.Root), an absolute path on this computer, so a sync never
+	// carries it; "" is magpie's cache, as before (MetalHqa on X: the
+	// models filled his C: drive).
+	RedactModelDir string          `json:"redactModelDir,omitempty"`
+	RedactPersonal bool            `json:"redactPersonal,omitempty"`
+	RedactKinds    map[string]bool `json:"redactKinds,omitempty"`
+	RedactWords    []string        `json:"redactWords,omitempty"`
 	// RedactWordsAnyCase matches RedactWords in any case (ZoeCats on
 	// Discord); off, the default, a word is matched as written.
 	RedactWordsAnyCase bool `json:"redactWordsAnyCase,omitempty"`
@@ -326,6 +331,11 @@ type Settings struct {
 	// one that runs it (gateway.hubOnDemand; ArvinCharl on X: the tools
 	// filled the context). This computer's own (KeepOwn).
 	RouterAllTools bool `json:"routerAllTools,omitempty"`
+	// RouterNoCode takes the router's code mode away: on by default, every
+	// agent given the router is also given run_code, which runs a script
+	// that calls its tools and gives back only what the script returns
+	// (gateway.hubCodeOn). This computer's own (KeepOwn).
+	RouterNoCode bool `json:"routerNoCode,omitempty"`
 	// Name is what this magpie is called, said in its web page's browser
 	// tab as "<name> · magpie", to tell several deployed ones apart
 	// (starballl on X). "" is MAGPIE_NAME, else none (InstanceName). This
@@ -376,6 +386,10 @@ type Settings struct {
 	// ClaudeWarmup is CodexWarmup for the Claude accounts, the request
 	// sent through Claude Code.
 	ClaudeWarmup string `json:"claudeWarmup,omitempty"`
+	// AgyWarmup is CodexWarmup for the agy CLI's (Antigravity's) accounts,
+	// each pool of models (Gemini, Claude & GPT) started on its own: a
+	// pool's window starts at the first request to one of its models.
+	AgyWarmup string `json:"agyWarmup,omitempty"`
 	// CodexWarmAt starts each ChatGPT account's 5-hour window at a time of
 	// day of the user's choosing, local "15:04", with the same tiny
 	// request: an account whose 5-hour window isn't running then gets one,
@@ -516,6 +530,13 @@ type Settings struct {
 	// fallbacks take the request. Off, as by default, such an account is
 	// sent requests and Anthropic decides whether extra usage pays.
 	ClaudeNoExtraUsage bool `json:"claudeNoExtraUsage,omitempty"`
+	// ClaudeRegionHold holds a Claude subscription's requests, and the
+	// Claude Code runs magpie starts for its accounts, while the network
+	// way out they would take is in a region Anthropic doesn't list as
+	// supported (internal/egress, @alterxyz4 on X). A way out not known
+	// (the lookup failed) holds nothing. Off, as by default, magpie only
+	// warns.
+	ClaudeRegionHold bool `json:"claudeRegionHold,omitempty"`
 	// ClaudePrintMode runs a Claude subscription's Claude Code as `claude
 	// -p` always. Off, as by default, a model request runs in Claude
 	// Code's interactive mode, as a person runs it, and never as -p: the
@@ -1614,7 +1635,8 @@ var (
 	Currencies = []string{"usd", "cny", CurrencyByProvider}
 	// TotalCurrencies are TotalCurrency's values, "" being usd.
 	TotalCurrencies = []string{"usd", "cny"}
-	// Warmups are CodexWarmup's and ClaudeWarmup's values, off as "".
+	// Warmups are CodexWarmup's, ClaudeWarmup's and AgyWarmup's values,
+	// off as "".
 	Warmups = []string{"", "week", "all"}
 	// TrayEvery are TrayUsageEvery's values, in minutes.
 	TrayEvery = []int{1, 3, 5, 10, 30}
@@ -1782,11 +1804,32 @@ var CompactAgents = []string{"codex", "claude", "grok"}
 
 // ForAgent is s as the agent of that kind reads Long conversations: its
 // own AgentCompact in CompactAt and FullContext, when it has one.
+//
+// Grok Build with none of its own, under magpie's default for every agent
+// (no size typed, so WorkingWindow), runs to the whole window, where Grok
+// Build compacts at a percent of its own (GrokOwnCompact). WorkingWindow
+// is Codex's, what OpenAI tells it for its own models; written into Grok
+// Build as a percent it compacted a 1M model at 27% and a 512K one at 53%
+// (@taktoshilite on X). A size the user typed, for every agent or for
+// Grok Build, still holds. Kigi, a fork of Grok Build, compacts at the
+// same 85% of its own and is told the same way.
 func (s Settings) ForAgent(kind string) Settings {
 	if c, ok := s.AgentCompacts[kind]; ok {
 		s.CompactAt, s.FullContext = c.At, c.Full
+	} else if (kind == "grok" || kind == "kigi") && s.CompactAt == 0 {
+		s.FullContext = true
 	}
 	return s
+}
+
+// GrokOwnCompact says Grok Build runs to the whole window only because it
+// has no Long conversations of its own and every agent's is magpie's
+// default (ForAgent): it compacts where Grok Build itself does, 85% of the
+// window unless the user's [session] says otherwise (grok-build's
+// DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT; xAI's own models come with 80).
+func (s Settings) GrokOwnCompact() bool {
+	_, own := s.AgentCompacts["grok"]
+	return !own && s.CompactAt == 0 && !s.FullContext
 }
 
 // Compact is where a conversation on a longer window is compacted when
@@ -1835,7 +1878,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.NoAccountDiscovery = cur.NoAccountDiscovery
 	s.LAN, s.AllowIPs, s.MTLS, s.HTTPS = cur.LAN, cur.AllowIPs, cur.MTLS, cur.HTTPS
 	s.DesktopGateway = cur.DesktopGateway // an address of this computer
-	s.RouterNote, s.RouterAllTools = cur.RouterNote, cur.RouterAllTools
+	s.RouterNote, s.RouterAllTools, s.RouterNoCode = cur.RouterNote, cur.RouterAllTools, cur.RouterNoCode
 	s.Name = cur.Name // what this magpie is called
 	s.FetchPrivate = cur.FetchPrivate
 	s.SessionTerminal = cur.SessionTerminal
@@ -1843,6 +1886,7 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.PanelShortcut = cur.PanelShortcut
 	s.RedactModel, s.RedactModelName, s.RedactModelScore = cur.RedactModel, cur.RedactModelName, cur.RedactModelScore
 	s.RedactModelOff, s.RedactModelAuto = cur.RedactModelOff, cur.RedactModelAuto
+	s.RedactModelDir = cur.RedactModelDir // a folder of this computer's
 	s.PowerMeter = cur.PowerMeter
 	s.ClaudeRunsMost = cur.ClaudeRunsMost
 	s.RequestArchiveLocal, s.RequestArchiveLocalMB = cur.RequestArchiveLocal, cur.RequestArchiveLocalMB
@@ -2443,6 +2487,18 @@ func SetRouterAllTools(on bool) error {
 	return save(s, true)
 }
 
+// SetRouterNoCode sets RouterNoCode alone, from what the file holds now.
+// A settings file that can't be read is left as it is, with the error.
+func SetRouterNoCode(off bool) error {
+	defer lockFile()()
+	s, err := loadChecked()
+	if err != nil {
+		return err
+	}
+	s.RouterNoCode = off
+	return save(s, true)
+}
+
 // TakeStable puts UpdateChannel on Stable when no channel is set, from
 // what the file holds now: a fresh install of the Stable version (the
 // site's Stable download) stays on Stable. A channel already set is the
@@ -2568,6 +2624,15 @@ func UseDefaultRedactModel(name string) (bool, error) {
 	return true, save(s, false)
 }
 
+// SetRedactModelDir keeps dir as the folder the local models are kept in;
+// "" is magpie's cache.
+func SetRedactModelDir(dir string) error {
+	defer lockFile()()
+	s := load()
+	s.RedactModelDir = dir
+	return save(s, false)
+}
+
 // SetRedactModelName keeps the local model the user picked while it is
 // off, for turning it on.
 func SetRedactModelName(name string) error {
@@ -2662,6 +2727,9 @@ func saveOwn(s Settings, recording, reads bool) error {
 	}
 	if !slices.Contains(Warmups, s.ClaudeWarmup) {
 		return fmt.Errorf("claude warm-up must be off, week or all, not %q", s.ClaudeWarmup)
+	}
+	if !slices.Contains(Warmups, s.AgyWarmup) {
+		return fmt.Errorf("agy warm-up must be off, week or all, not %q", s.AgyWarmup)
 	}
 	for _, at := range slices.Concat(s.CodexWarmAts, s.ClaudeWarmAts) {
 		if _, _, ok := Clock(at); !ok {
@@ -3003,6 +3071,9 @@ func (s Settings) normal() Settings {
 	}
 	if s.ClaudeWarmup == "off" {
 		s.ClaudeWarmup = ""
+	}
+	if s.AgyWarmup == "off" {
+		s.AgyWarmup = ""
 	}
 	if s.TrayUsageEvery == 0 {
 		s.TrayUsageEvery = 3
